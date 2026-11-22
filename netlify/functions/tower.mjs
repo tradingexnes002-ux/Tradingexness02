@@ -23,7 +23,7 @@ export default async req => {
         if (Array.isArray(c.symbols)) { const seen = new Set(); nx.symbols = c.symbols.filter(x => x && x.s).map(x => ({ s: String(x.s).trim().replace(/[^A-Za-z0-9._/#-]/g, '').slice(0, 20), a: ['forex', 'saham', 'crypto'].includes(x.a) ? x.a : 'forex' })).filter(x => { const k = x.s.toUpperCase().replace(/[^A-Z0-9]/g, ''); if (!k || seen.has(k)) return false; seen.add(k); return true; }).slice(0, 6); }
         if (c.auto && typeof c.auto === 'object') {
           const x = c.auto, au = nx.auto = { ...(nx.auto || {}) };
-          for (const k of ['enabled', 'dryRun', 'brain', 'judgeGate', 'revise']) if (typeof x[k] === 'boolean') au[k] = x[k];
+          for (const k of ['enabled', 'dryRun', 'brain', 'judgeGate', 'revise', 'brainFailOpen']) if (typeof x[k] === 'boolean') au[k] = x[k];
           if (isFinite(x.riskPct) && x.riskPct >= 0.05 && x.riskPct <= 10) au.riskPct = +x.riskPct;
           if (isFinite(x.maxDailyLossPct) && x.maxDailyLossPct >= 0.5 && x.maxDailyLossPct <= 25) au.maxDailyLossPct = +x.maxDailyLossPct;
           if (isFinite(x.maxOpen) && x.maxOpen >= 1 && x.maxOpen <= 3) au.maxOpen = Math.round(x.maxOpen);

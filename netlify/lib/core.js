@@ -233,7 +233,7 @@ function god(v1raw, v15, minRR = 3, tf = {}) {
   const sT = kuat ? 100 : 50, sP = Math.min(100, Math.round(rrRaw / minRR * 100));
   const d = price > 100 ? 2 : 5, f = x => +x.toFixed(d), zz = q => q && q.map(f);
   return { trend, kuat, h1signal, h1time: v1[n].t, dir: buy ? 'BUY' : 'SELL', basis, htf: tf.h || '1h', ltf: tf.l || '15min', h: { chk: hchk, ok: hOk, total: 8, core: hCore, layak }, grade,
-    m: { tpBasis: mEntry === null ? null : tpBasis, trend: ltfTrend, rsi: +R15.toFixed(1), atr: +A15.toPrecision(3), chk, ok: mOk, total: 7, core: mCore, entry: mEntry === null ? null : f(mEntry), sl: mSl === null ? null : f(mSl), tp: mTp === null ? null : f(mTp), rr: mRr,
+    m: { preview: mEntry !== null ? null : { entry: f(price), sl: f(slT), tp: f(tpT), rr: +(rwT / rkT).toFixed(2), basis: tpBasis }, tpBasis: mEntry === null ? null : tpBasis, trend: ltfTrend, rsi: +R15.toFixed(1), atr: +A15.toPrecision(3), chk, ok: mOk, total: 7, core: mCore, entry: mEntry === null ? null : f(mEntry), sl: mSl === null ? null : f(mSl), tp: mTp === null ? null : f(mTp), rr: mRr,
       plan: { entry: f(pE), sl: f(pSl), tp: f(pTp), rr: pRr, armed: mEntry !== null } }, entry: f(entry), entryLo: f(lo), entryHi: f(hi), sl: f(sl),
     tp1: f(tp1), tp2: tp2 === null ? null : f(tp2), tp: f(tp1), rr, minRR, status, dist, trig: status === 'SIAP ENTRY',
     supply: zz(supZ), demand: zz(demZ), skorTrend: sT, skorPotensi: sP, skor, entryEligible, planEligible: skor >= 70 };

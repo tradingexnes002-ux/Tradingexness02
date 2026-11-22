@@ -64,24 +64,39 @@ const testMail = () => mail({ emails: 0 }, { emailTest: true }, 'Test', 'Tes ema
 const ev = (st, a, s, m) => { st.log.unshift({ t: Date.now(), a, s, m }); if (st.log.length > 80) st.log.length = 80; st.counts[a] = (st.counts[a] || 0) + 1; };
 
 async function llm(prompt) {
-  const ctl = new AbortController(), tm = setTimeout(() => ctl.abort(), 12000);
-  const fail = (r, j) => new Error('HTTP ' + r.status + ' ' + String((j && j.error && (j.error.message || j.error.status || j.error)) || '').slice(0, 90));
-  try {
-    if (process.env.ANTHROPIC_KEY) {
-      const r = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', signal: ctl.signal, headers: { 'content-type': 'application/json', 'x-api-key': process.env.ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
-        body: JSON.stringify({ model: process.env.CLAUDE_MODEL || 'claude-haiku-5-5', max_tokens: 300, messages: [{ role: 'user', content: prompt }] }) });
+  // Gangguan sementara dari penyedia AI (429/500/502/503/504, "high demand") dicoba ulang dengan jeda; total waktu dibatasi agar fungsi tidak kena timeout.
+  const fail = (r, j) => { const e = new Error('HTTP ' + r.status + ' ' + String((j && j.error && (j.error.message || j.error.status || j.error)) || '').slice(0, 90)); e.status = r.status; return e; };
+  const once = async (model, ms) => {
+    const ctl = new AbortController(), tm = setTimeout(() => ctl.abort(), ms);
+    try {
+      if (process.env.ANTHROPIC_KEY) {
+        const r = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', signal: ctl.signal, headers: { 'content-type': 'application/json', 'x-api-key': process.env.ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
+          body: JSON.stringify({ model: process.env.CLAUDE_MODEL || 'claude-haiku-5-5', max_tokens: 300, messages: [{ role: 'user', content: prompt }] }) });
+        const j = await r.json().catch(() => null); if (!r.ok) throw fail(r, j);
+        const t = j && j.content && j.content[0] && j.content[0].text; if (!t) throw new Error('jawaban kosong'); return t;
+      }
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, { method: 'POST', signal: ctl.signal,
+        headers: { 'content-type': 'application/json', 'x-goog-api-key': process.env.GEMINI_KEY },
+        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseMimeType: 'application/json', temperature: 0.2 } }) });
       const j = await r.json().catch(() => null); if (!r.ok) throw fail(r, j);
-      const t = j && j.content && j.content[0] && j.content[0].text; if (!t) throw new Error('jawaban kosong'); return t;
+      const t = j && j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts && j.candidates[0].content.parts[0] && j.candidates[0].content.parts[0].text;
+      if (!t) throw new Error('jawaban kosong'); return t;
+    } catch (e) { throw e && e.name === 'AbortError' ? Object.assign(new Error('timeout ' + Math.round(ms / 1000) + ' detik'), { status: 504 }) : e; }
+    finally { clearTimeout(tm); }
+  };
+  const main = process.env.GEMINI_MODEL || 'gemini-3.8-flash', alt = process.env.GEMINI_FALLBACK_MODEL, t0 = Date.now(), delays = [1200, 2500];
+  let last;
+  for (let k = 0; k < 3; k++) {
+    const model = k === 2 && alt && !process.env.ANTHROPIC_KEY ? alt : main; // percobaan terakhir pakai model cadangan bila diisi (GEMINI_FALLBACK_MODEL)
+    try { return await once(model, 8000); }
+    catch (e) {
+      last = e;
+      const transient = [429, 500, 502, 503, 504].includes(e && e.status);
+      if (!transient || k === 2 || Date.now() - t0 > 14000) break;
+      await new Promise(r => setTimeout(r, delays[k]));
     }
-    const m = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
-    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`, { method: 'POST', signal: ctl.signal,
-      headers: { 'content-type': 'application/json', 'x-goog-api-key': process.env.GEMINI_KEY },
-      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseMimeType: 'application/json', temperature: 0.2 } }) });
-    const j = await r.json().catch(() => null); if (!r.ok) throw fail(r, j);
-    const t = j && j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts && j.candidates[0].content.parts[0] && j.candidates[0].content.parts[0].text;
-    if (!t) throw new Error('jawaban kosong'); return t;
-  } catch (e) { throw e && e.name === 'AbortError' ? new Error('timeout 12 detik') : e; }
-  finally { clearTimeout(tm); }
+  }
+  throw last;
 }
 const aiWhy = e => String((e && e.message) || e || 'tidak diketahui').slice(0, 110);
 const aiJson = t => { const i = t.indexOf('{'), k = t.lastIndexOf('}'); if (i < 0 || k < i) throw new Error('balasan bukan JSON'); return JSON.parse(t.slice(i, k + 1)); };
@@ -110,7 +125,7 @@ function judge(st, a = {}) {
   ];
   return { n, N, cost, avg: +avg.toFixed(3), pf: +pf.toFixed(2), dd: +dd.toFixed(2), winrate: dn ? Math.round(wins / dn * 100) : null, props, open: props.every(p => p.pass) };
 }
-const AUTO = { enabled: false, dryRun: true, brain: true, riskPct: 0.25, maxDailyLossPct: 3, maxOpen: 1, cooldownMin: 30, kill: false, mode: 'near', cls: 'high', minSkor: 70, revise: true };
+const AUTO = { enabled: false, dryRun: true, brain: true, riskPct: 0.25, maxDailyLossPct: 3, maxOpen: 1, cooldownMin: 30, kill: false, mode: 'near', cls: 'high', minSkor: 70, revise: true, brainFailOpen: true };
 // Antrean order otomatis ke MT5. Berlapis: gerbang server (env), saklar dashboard, kill switch, batas rugi harian, batas posisi aktif, jeda per simbol, dry-run.
 // Brain untuk eksekusi otomatis: hanya boleh MENAHAN order yang sudah lolos aturan, tidak pernah membuka order sendiri. Gagal = ditahan.
 async function brainAuto(sym, g, cmd, lossPct, real) {
@@ -171,6 +186,7 @@ async function autoQueue(mt5, cfg, g, sym, price, st) {
     if (!bn.ok) { if (!bn.failed) await markPlan(); return { msg: `Brain MENAHAN order (${bn.failed ? 'AI tidak tersedia atau gagal, ditahan demi keamanan' : 'menolak'}): ${bn.note} | ${info}`, brain: bn }; }
   }
   const track = (id, d) => { if (st) (st.real = st.real || {})[sym] = { id, dry: d, status: d ? 'VIRTUAL' : 'QUEUED', side: g.dir, symbol, entry, sl, tp, riskPct, mode: a.mode, h1time: g.h1time, ref: { dir: g.dir, entry: g.entry, sl: g.sl, tp1: g.tp1 }, t: Date.now() }; };
+  if (bn && bn.failed && !dry && a.brainFailOpen === false) return { msg: `Brain AI tidak tersedia (${bn.note}); order live ditahan demi keamanan, dicoba lagi di scan berikutnya | ${info}`, brain: bn };
   if (dry) { await markPlan(); track('dry-' + Date.now().toString(36), true); return { msg: 'DRY-RUN, tidak dikirim: ' + info, cmd, brain: bn }; }
   const id = require('crypto').randomUUID();
   await mt5.setJSON('command_current', { id, ...cmd, status: 'PENDING', createdAt: Date.now(), expiresAt: Date.now() + 120000, source: 'auto-tower', preflight: 'ea-live-quote-required' });
@@ -186,7 +202,7 @@ async function autoReport(st, cfg, au, g, sym) {
   const key = au.notify ? '' : sym + '|' + String(au.msg || '').replace(/\(sisa[^)]*\)/, '').replace(/\d+(\.\d+)?%/g, '%') + '|' + (au.brain ? au.brain.note : '');
   if (key && st.exeKey[sym] === key) return;
   st.exeKey[sym] = key;
-    if (au.brain) ev(st, 'BRN', sym, 'auto: ' + (au.brain.failed ? 'dilewati, ' : au.brain.ok ? 'setuju, ' : 'menahan, ') + au.brain.note);
+    if (au.brain) ev(st, 'BRN', sym, 'auto: ' + (au.brain.failed ? 'AI tidak tersedia, ' : au.brain.ok ? 'setuju, ' : 'menahan, ') + au.brain.note);
   ev(st, 'EXE', sym, 'AUTO ' + au.msg);
   if (au.notify === 'sent') await mail(st, cfg, 'Pos', `🤖 AUTO ORDER ${au.cmd.side} LIMIT ${au.cmd.symbol}`, [['Simbol', au.cmd.symbol], ['Order', au.cmd.side + ' LIMIT'], ['Entry', au.cmd.entry], ['SL', au.cmd.sl], ['TP', au.cmd.tp], ['Risiko', au.cmd.riskPct + '% ekuitas'], ['Skor', g.skor], ['Brain', au.brain ? au.brain.note : 'nonaktif']]);
   if (au.notify === 'halt') await mail(st, cfg, 'Pos', '⛔ Batas rugi harian tercapai: eksekusi otomatis berhenti hari ini', [['Rugi hari ini', au.lossPct.toFixed(1) + '%']]);

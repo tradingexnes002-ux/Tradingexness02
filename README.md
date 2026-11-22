@@ -9,7 +9,8 @@
    - ANTHROPIC_KEY   : (opsional) key Claude dari console.anthropic.com. Jika diisi, AI memakai Claude (berbayar) dan GEMINI_KEY tidak dipakai.
    - CLAUDE_MODEL    : opsional. Default claude-sonnet-5-5. Untuk lebih murah dan cepat: claude-haiku-5-5.
    - APP_PASSWORD    : password bebas buatan Anda (agar kuota tidak dipakai orang lain)
-   - GEMINI_MODEL    : opsional. Default gemini-2.5-flash. Ganti jika nama model berubah.
+   - GEMINI_MODEL    : opsional. Default gemini-3.8-flash. Ganti jika nama model berubah.
+   - GEMINI_FALLBACK_MODEL : opsional. Model cadangan (mis. gemini-3.5-flash-lite) dipakai pada percobaan ke-3 bila model utama error 503/429.
 4. Deploys > Trigger deploy > Clear cache and deploy site.
 5. Buka situsnya, klik tombol Password, isi APP_PASSWORD.
 
