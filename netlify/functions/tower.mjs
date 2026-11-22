@@ -18,6 +18,8 @@ export default async req => {
         if (['1h', '2h', '4h', '1day'].includes(c.htf)) nx.htf = c.htf;
         if (['5min', '15min', '30min'].includes(c.ltf)) nx.ltf = c.ltf;
         if (isFinite(c.rr) && c.rr >= 1 && c.rr <= 10) nx.rr = +c.rr;
+        if (['h1', 'm15', 'konfirm'].includes(c.paperMode)) nx.paperMode = c.paperMode;
+        if (isFinite(c.m15Min) && c.m15Min >= 3 && c.m15Min <= 7) nx.m15Min = Math.round(c.m15Min);
         if (Array.isArray(c.symbols)) { const seen = new Set(); nx.symbols = c.symbols.filter(x => x && x.s).map(x => ({ s: String(x.s).trim().replace(/[^A-Za-z0-9._/#-]/g, '').slice(0, 20), a: ['forex', 'saham', 'crypto'].includes(x.a) ? x.a : 'forex' })).filter(x => { const k = x.s.toUpperCase().replace(/[^A-Z0-9]/g, ''); if (!k || seen.has(k)) return false; seen.add(k); return true; }).slice(0, 6); }
         if (c.auto && typeof c.auto === 'object') {
           const x = c.auto, au = nx.auto = { ...(nx.auto || {}) };
@@ -26,7 +28,7 @@ export default async req => {
           if (isFinite(x.maxDailyLossPct) && x.maxDailyLossPct >= 0.5 && x.maxDailyLossPct <= 25) au.maxDailyLossPct = +x.maxDailyLossPct;
           if (isFinite(x.maxOpen) && x.maxOpen >= 1 && x.maxOpen <= 3) au.maxOpen = Math.round(x.maxOpen);
           if (isFinite(x.cooldownMin) && x.cooldownMin >= 0 && x.cooldownMin <= 1440) au.cooldownMin = Math.round(x.cooldownMin);
-          if (['near', 'plan'].includes(x.mode)) au.mode = x.mode;
+          if (['near', 'plan', 'konfirm'].includes(x.mode)) au.mode = x.mode;
           if (['low', 'medium', 'high', 'score'].includes(x.cls)) au.cls = x.cls;
           if (isFinite(x.minSkor) && x.minSkor >= 40 && x.minSkor <= 100) au.minSkor = Math.round(x.minSkor);
           if (typeof x.kill === 'boolean') { au.kill = x.kill; await getStore('mt5-trading').setJSON('auto_kill', { on: x.kill, at: Date.now() }); }
