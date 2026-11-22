@@ -1,0 +1,179 @@
+# Trading AI Monitor (Forex + Saham AS)
+
+## Pasang di Netlify (tanpa CLI)
+1. Buat akun GitHub, buat repo baru (private), upload SEMUA isi folder ini (termasuk folder netlify dan public).
+2. Netlify > Add new site > Import an existing project > pilih repo. Biarkan build command kosong.
+3. Site configuration > Environment variables, isi:
+   - TWELVEDATA_KEY  : key gratis dari twelvedata.com (forex, emas, saham AS)
+   - GEMINI_KEY      : key gratis dari aistudio.google.com
+   - ANTHROPIC_KEY   : (opsional) key Claude dari console.anthropic.com. Jika diisi, AI memakai Claude (berbayar) dan GEMINI_KEY tidak dipakai.
+   - CLAUDE_MODEL    : opsional. Default claude-sonnet-5-5. Untuk lebih murah dan cepat: claude-haiku-5-5.
+   - APP_PASSWORD    : password bebas buatan Anda (agar kuota tidak dipakai orang lain)
+   - GEMINI_MODEL    : opsional. Default gemini-2.5-flash. Ganti jika nama model berubah.
+4. Deploys > Trigger deploy > Clear cache and deploy site.
+5. Buka situsnya, klik tombol Password, isi APP_PASSWORD.
+
+## Catatan kuota
+Setiap simbol yang dipantau memakai 1 kredit Twelve Data per refresh (hasil di-cache 50 detik).
+Saat memakai fallback Twelve Data, paket gratis dibatasi per menit dan per hari: pantau sedikit simbol. Data Exness diprioritaskan ketika MT5 aktif dan tick broker masih segar.
+Saham Indonesia (IDX) tidak termasuk paket gratis Twelve Data.
+
+## Acuan H1 + M15 (aturan perkiraan)
+- H1 (candle tutup saja) menentukan tren dan sinyal alert: harga vs ALMA(9) dikonfirmasi EMA20/EMA50.
+- M15 jadi pemicu entry: pullback ke EMA20 atau zona supply/demand H1, searah tren H1, candle konfirmasi.
+- Zona dari swing high/low H1 (panjang 10). SL dari swing M15, TP dari zona lawan terdekat.
+- Status SIAP jika tren kuat + pemicu M15 + R:R >= batas di kolom R:R (default 2.5).
+- Ini BUKAN salinan script God 62 PERSONAL. ALMA periode 2 pada script asli praktis hanya candle sebelumnya, jadi dipakai ALMA(9).
+- Biaya kuota: H1 di-cache 10 menit, M15 ikut interval refresh.
+
+## Plan berbasis zona (versi 2)
+- Entry adalah LIMIT di tepi zona demand (buy) atau supply (sell) dari H1, bukan harga live. Level entry, SL, dan TP tetap sama selama candle H1 belum berganti, jadi tidak berubah di setiap refresh.
+- Harga live hanya mengubah STATUS: MENUNGGU, DEKAT ENTRY, DI ZONA, SIAP ENTRY (butuh candle konfirmasi M15 dan R:R minimal), RR KECIL, LEMAH, BATAL, SELESAI.
+- Plan AI disimpan per simbol di browser dan tidak berubah sampai Anda menekan Analisa AI lagi. Kartu memberi tahu jika candle H1 baru sudah tutup.
+
+## Grafik interaktif
+- Tombol "Grafik" di tiap kartu membuka candlestick M15 atau H1 dengan EMA20, EMA50, ALMA9, RSI 14, zona supply/demand, serta garis Entry, SL, TP.
+- Memakai pustaka TradingView Lightweight Charts (gratis, dimuat dari cdn.jsdelivr.net, versi 4.2.0).
+- Grafik memakai data yang sama dengan kartu (cache server), jadi tidak menambah kredit Twelve Data.
+
+## Analisa H1 dan M15 terpisah, timeframe bisa diatur
+- Pilihan "Acuan" (1h, 2h, 4h, 1day) menentukan tren, zona, dan alert. Pilihan "Entry" (5min, 15min, 30min) menentukan timing entry.
+- Kartu punya dua blok: Analisa acuan (tren, zona, plan limit) dan Analisa entry (checklist 5 syarat, entry presisi, SL ketat).
+- Tombol Analisa dan kamera ada untuk masing-masing timeframe, dan plan AI disimpan terpisah.
+- Pilihan timeframe tersimpan di browser. Jangan memantau terlalu banyak simbol karena tiap timeframe memakai kuota data.
+
+## Syarat lengkap (versi 3)
+Acuan (H1) punya 8 syarat. Inti: tren kuat, zona valid, ruang ke target dan R:R, pasar aktif. Tambahan: slope EMA50, struktur HL/LH, zona segar, RSI.
+H1 disebut LAYAK PANTAU jika 4 syarat inti terpenuhi dan minimal 2 syarat tambahan.
+Entry (M15) punya 7 syarat. Inti: harga di zona, konfirmasi kuat, R:R, volatilitas. Tambahan: break struktur mikro, EMA searah, RSI dan momentum.
+SIAP ENTRY hanya jika H1 layak pantau dan semua syarat inti M15 terpenuhi. Grade A jika skor 85 ke atas.
+Skor = persentase syarat terpenuhi (H1 50 persen, M15 50 persen). Centang "Hanya H1 layak" untuk menyaring pantauan.
+Syarat "pasar aktif" membandingkan ATR terbaru dengan rata-rata, sehingga data datar saat pasar tutup tidak lolos.
+
+## Control Tower (versi 4): pemantauan terjadwal, paper trading, winrate, email
+Yang baru: file package.json, netlify/lib/tower.js, netlify/functions/monitor.mjs (terjadwal) dan tower.mjs (API dashboard).
+Cara kerja: tiap 15 menit (menit ke 2, 17, 32, 47 UTC) fungsi monitor memeriksa simbol yang Anda pilih di dashboard. Posisi hanya SIMULASI (paper), tidak ada order ke broker.
+- Email saat acuan H1 mencapai 7/8 syarat, saat inti entry M15 terpenuhi (SIAP ENTRY), saat AI membuka posisi paper, dan saat posisi kena TP, SL, atau habis waktu.
+- Posisi ditutup SL lebih dulu jika SL dan TP tersentuh di candle yang sama (hitungan konservatif). Posisi habis waktu setelah 96 candle entry.
+- Winrate dihitung TP dibanding SL. Kurva R memakai hasil dalam satuan R (jarak entry ke SL).
+Variabel Netlify tambahan: RESEND_KEY (dari resend.com), EMAIL_TO (email yang dipakai mendaftar di Resend), EMAIL_FROM (opsional).
+Pemantauan hanya berjalan di deploy produksi. Jika jadwal tidak berjalan di akun Anda, pakai layanan cron gratis (mis. cron-job.org) untuk memanggil alamat-situs/.netlify/functions/tower?run=1 tiap 15 menit dengan header x-app-key berisi APP_PASSWORD.
+Data posisi dan riwayat disimpan di Netlify Blobs.
+
+## Email tingkat syarat M15 (versi 4.1)
+Email dikirim saat syarat entry M15 naik ke 6/7 dan saat naik ke 7/7. Email berisi syarat yang belum terpenuhi. Hanya terkirim saat melewati ambang (tidak berulang selama tetap di level yang sama). Jika langsung loncat ke 7/7, hanya email 7/7 yang dikirim. Bisa dimatikan lewat kotak centang "Email saat entry 6/7 dan 7/7".
+
+## Modal dan reward dalam rupiah (versi 4.2)
+Modal awal default Rp2.000.000 dan risiko per trade default 1 persen, bisa diubah di panel Control Tower (tombol Terapkan modal).
+Ukuran risiko tiap posisi = saldo saat dibuka dikali persen risiko. Hasil = R dikali risiko (rupiah), jadi tidak butuh kurs. Saldo bertambah atau berkurang tiap posisi ditutup (majemuk).
+Dashboard menampilkan saldo, profit, risiko per trade, max drawdown, kurva saldo, serta risiko dan potensi TP1 untuk tiap plan dan posisi. Email posisi memuat nilai rupiah.
+Catatan: simulasi mengasumsikan ukuran posisi bisa persis sesuai risiko. Di broker nyata lot minimum bisa membuat risiko sebenarnya lebih besar dari persen yang dipilih, apalagi untuk modal kecil dan instrumen seperti emas.
+
+## Sumber data Exness (versi 6)
+Lihat exness/PANDUAN_EXNESS.md. File baru: netlify/functions/ingest.mjs dan exness/ExnessBridge.mq5. Variabel Netlify baru: DATA_SOURCE, EA_KEY, EXNESS_SUFFIX.
+
+
+## AI Exness MT5 execution bridge (versi awal, demo-first)
+Proyek ini mempertahankan dashboard/analisis yang ada dan menambahkan panel AI Exness MT5, antrean pending LIMIT, endpoint status, dan EA baru `exness/AI_Exness_Bot.mq5`. EA lama `ExnessBridge.mq5` tetap hanya mengirim candle.
+
+### Environment variables tambahan
+- `APP_PASSWORD`: password dashboard (wajib untuk endpoint kontrol).
+- `EA_KEY`: rahasia acak khusus EA, berbeda dari password Exness.
+- `MT5_ORDERS_ENABLED`: default `false`; jangan ubah sebelum EA diuji di akun DEMO.
+- `MT5_ALLOW_LIVE`: default `false`; server-side live gate. Tidak ada alasan mengaktifkannya pada tahap uji.
+- `GEMINI_KEY` atau `ANTHROPIC_KEY`: untuk analisis AI.
+- `TWELVEDATA_KEY`: diperlukan untuk mode `auto` sebagai fallback, atau `twelve`.
+- `DATA_SOURCE=auto`: gunakan Exness MT5 saat tick broker segar dan candle lengkap; otomatis fallback ke Twelve Data saat MT5/quote tidak aktif.
+- `EA_STALE_MIN=2`: batas umur tick broker sebelum fallback ke Twelve Data (menit).
+
+### Cara kerja order bridge
+1. Dashboard meminta analisis AI; hasilnya harus diperiksa manusia.
+2. Tombol antre order mengirim pending BUY LIMIT/SELL LIMIT dengan entry, SL, TP, dan risiko (0,05%–5%, mode uji).
+3. `mt5-command.mjs` hanya melayani EA yang menyertakan `x-ea-key`. EA mengambil satu perintah dan mengirim ACK.
+4. EA menghitung volume berdasarkan equity, entry, SL, tick value melalui `OrderCalcProfit`, dan membulatkan lot ke bawah. Jika lot minimum broker melampaui budget risiko, order ditolak.
+5. EA default `EnableExecution=false` dan `AllowLiveAccount=false`; akun non-demo ditolak kecuali input EA sengaja diubah.
+
+### Setup Netlify baru
+Import repo GitHub baru (private), deploy folder proyek ini, lalu isi environment variables. Untuk tahap pertama biarkan `MT5_ORDERS_ENABLED=false` dan `MT5_ALLOW_LIVE=false`. Deploy ulang setelah menambah variabel.
+
+### Setup EA
+1. Login ke akun Exness MT5 yang sudah ada di komputer Windows. Pastikan akun demo dipakai untuk pengujian.
+2. MT5 > File > Open Data Folder > MQL5 > Experts. Salin `AI_Exness_Bot.mq5`, buka di MetaEditor (F4), Compile (F7).
+3. Tools > Options > Expert Advisors > Allow WebRequest for listed URL. Tambahkan domain Netlify baru, misalnya `https://nama-site.netlify.app`.
+4. Pasang EA pada chart mana saja. Isi `ServerBaseUrl` dengan `https://nama-site.netlify.app/.netlify/functions`, `EaKey` sama dengan `EA_KEY`.
+5. Pastikan `EnableExecution=false`, `AllowLiveAccount=false`. Periksa tab Experts dan panel status dashboard.
+6. Setelah tes koneksi berhasil, untuk demo saja: set `MT5_ORDERS_ENABLED=true` di Netlify, deploy ulang, lalu ubah `EnableExecution=true` di EA pada akun DEMO. Jangan aktifkan live.
+
+### Batasan dan pengujian wajib
+- Versi ini adalah tahap eksekusi terkontrol: AI menganalisis dan pengguna meninjau lalu mengantrekan pending order. Belum ada auto-trading tanpa pengawasan/loop AI berkelanjutan.
+- EA memerlukan MT5 desktop, komputer menyala, internet aktif, Algo Trading diizinkan, dan simbol persis seperti Market Watch.
+- Protokol perintah memakai polling HTTPS. Satu perintah pending aktif pada satu waktu dan kedaluwarsa setelah 2 menit. EA menggunakan Global Variable terminal sebagai pengaman duplikasi.
+- Uji di Strategy Tester untuk logika strategi (WebRequest tidak tersedia di Strategy Tester), lalu uji koneksi dan eksekusi di akun demo. Verifikasi hasil lot dan stop level untuk simbol akun.
+- Perangkat lunak ini tidak menjamin profit. Jangan gunakan akun real sebelum audit dan forward-test demo yang memadai.
+
+
+### Pengaman order MT5 (v4)
+Sebelum pending order dikirim, EA memvalidasi quote MT5 terbaru (maksimal 30 detik), spread, jarak entry, stop/freeze level, urutan SL/TP, dan R:R minimum 1,2. Perintah berlaku 60 detik dan ditolak bila terminal MT5 offline/laporan akun basi. Pengaman ini harus diuji pada akun demo; tidak mengaktifkan trading otomatis AI dan tidak menjamin hasil trading.
+
+
+## Konfigurasi Gold Exness XAUUSD (pembaruan)
+- Simbol chart utama: `XAU/USD` di daftar aplikasi, dipetakan ke `XAUUSD` pada EA MT5.
+- `EXNESS_SUFFIX` dikosongkan karena nama simbol Market Watch yang dikonfirmasi pengguna adalah `XAUUSD` (tanpa akhiran).
+- EA `ExnessBridge.mq5`: `SymbolList=XAUUSD`, `TimeframeList=M5,M15,H1,H4`, `FullBars=300`, `IntervalSec=5`.
+- Dashboard refresh default 5 detik. Ini pembaruan polling mendekati real-time; bukan streaming tick tanpa jeda. Data chart bersumber dari Exness ketika tick/candle MT5 segar dan lengkap; `DATA_SOURCE=auto` dapat memakai Twelve Data sebagai fallback.
+- EA bridge ini hanya mengirim data, tidak mengeksekusi transaksi. Eksekusi real tetap terkunci dan memerlukan pengujian terpisah.
+
+
+## Patch v5.1 — daftar simbol terpadu
+- Pilihan simbol Control Tower dan Scanner kini disinkronkan ke satu daftar aktif.
+- Simbol yang tidak dipilih dinonaktifkan pada watchlist scanner saat konfigurasi Control Tower tersinkron.
+- Scanner memproses hanya simbol aktif (maksimal 6) dari seluruh kategori, bukan hanya tab yang sedang dibuka.
+- Endpoint candles dan Control Tower menghapus simbol duplikat sebelum diproses.
+- Riwayat log lama tidak otomatis dihapus; gunakan Reset jika ingin mengosongkan statistik/log paper trading.
+
+## Eksekusi otomatis ke MT5 dengan pengaman (versi 6)
+Fitur ini mengirim order pending LIMIT ke MT5 secara otomatis saat aturan entry Control Tower terpenuhi (skor 70 dan M15 6/7 dengan R:R memenuhi), tanpa persetujuan dan tanpa analisa AI. Semua pengaman di bawah aktif secara bawaan dan berlapis.
+
+Lapisan pengaman:
+1. Gerbang server (Netlify): AUTO_TRADE_ENABLED=true, MT5_ORDERS_ENABLED=true, dan untuk akun real MT5_ALLOW_LIVE=true. Jika salah satu tidak true, tidak ada order yang diantrekan.
+2. Saklar dashboard: Aktifkan, serta Dry-run (bawaan hidup) yang hanya mencatat order yang akan dikirim.
+3. Kill switch: tombol HENTIKAN SEMUA di dashboard, berlaku juga untuk perintah yang sudah antre.
+4. Batas rugi harian (bawaan 3 persen dari ekuitas awal hari UTC), dicek di server dan di EA.
+5. Batas posisi atau order aktif (bawaan 1), dicek di server dan di EA. Satu perintah pada satu waktu, jeda 120 menit per simbol.
+6. Risiko per order dibatasi 0,05 sampai 5 persen ekuitas (mode uji; semula 0,5). EA menghitung lot dan MENOLAK order jika lot minimum broker melebihi anggaran risiko.
+7. EA: EnableExecution=false dan AllowLiveAccount=false bawaan, DryRun=true bawaan (validasi penuh tanpa kirim order), pending kedaluwarsa 2 jam, cek spread, umur quote, jarak entry, dan R:R minimum.
+
+Tahap uji yang disarankan di akun real:
+A. Dry-run server: Aktifkan + Dry-run di dashboard. Cek log Control Tower (baris AUTO) selama beberapa hari. EA tidak menerima apa pun.
+B. Dry-run EA: matikan Dry-run di dashboard, pasang EA dengan EnableExecution=true, AllowLiveAccount=true, DryRun=true. EA memvalidasi dan membalas DRYRUN tanpa order. Cek pesan di tab Experts.
+C. Live: hanya setelah A dan B terbukti benar, set DryRun=false di EA. Mulai dengan risiko 0,05 sampai 0,1 persen.
+Kode EA belum dikompilasi atau diuji di MT5 oleh penyusun paket ini. Kompilasi sendiri dan periksa hasilnya.
+
+### Brain AI pada eksekusi otomatis (versi 6.1)
+Tiap order otomatis diperiksa Brain (Gemini atau Claude) tanpa klik apa pun. Brain hanya bisa menahan order yang sudah lolos semua aturan dan pengaman, dan tidak pernah membuka order sendiri.
+Gagal berarti ditahan: jika kunci AI kosong, model tidak tersedia, jaringan error, atau jawabannya bukan JSON yang jelas dengan buka=true, order TIDAK dikirim.
+AI hanya dipanggil setelah semua pemeriksaan lain lolos, jadi pemakaian kuota kecil. Dry-run tetap memanggil Brain agar Anda bisa menilai keputusannya.
+Pastikan GEMINI_MODEL berisi model yang tersedia (mis. gemini-3.8-flash), kalau tidak semua order akan ditahan.
+Brain bisa dimatikan lewat kotak centang di panel Eksekusi otomatis.
+
+## Trading Desk dan gerbang Judge (versi 6.2)
+Panel Trading Desk di Control Tower menampilkan empat peran:
+- THE EYES: kerucut volatilitas 16 candle ke depan (400 simulasi dari pergerakan candle terakhir) dengan P(naik). Ini gambaran ketidakpastian, bukan prediksi arah.
+- THE BRAIN: BUY, SELL, atau HOLD untuk simbol terpilih, tabel suara dari syarat H1 dan M15, serta alasan AI terakhir.
+- THE JUDGE: gerbang uang nyata. Order LIVE hanya dikirim jika rekam jejak paper (aturan dan Brain yang sama) lolos semua uji setelah biaya 0,1R per trade: minimal 30 trade, ekspektasi positif, profit factor minimal 1,2, drawdown maksimal 8R, dan tetap positif tanpa trade terbaik.
+- THE MEMORY: jumlah candle dibaca, keputusan Brain, eksekusi, winrate, dan deretan hasil trade.
+Gerbang Judge menyala bawaan dan dicek di server, bukan hanya di tampilan. Dry-run tidak terkena gerbang. Mematikannya lewat kotak centang "Gerbang Judge" butuh konfirmasi dan ditandai merah di panel.
+Agar rekam jejak terkumpul, biarkan "AI memantau" menyala dan "AI boleh open posisi (paper)" tercentang.
+
+## Mode order otomatis (patch risk5-loss25)
+Di panel "Eksekusi otomatis ke MT5" ada pilihan **Mode order**:
+- **Dekat harga (near)**: perilaku asli. Order dikirim saat syarat inti M15 terpenuhi (SIAP ENTRY). Entry sedikit di bawah/atas harga, SL ketat M15, TP1 dari plan H1.
+- **Plan H1 (plan)**: LIMIT dipasang persis di entry/SL/TP1 plan H1 selagi harga belum masuk zona (status MENUNGGU atau DEKAT ENTRY, H1 layak pantau, R:R memenuhi batas). Tidak menunggu konfirmasi M15. Satu plan hanya dievaluasi sekali per status dry-run.
+- Di EA v1.30, mode plan memakai `PlanMaxDistancePoints` (default 0 = tanpa batas jarak) dan `PlanExpirySeconds` (default 14400 = 4 jam). Pemeriksaan lain tetap berlaku: quote segar, spread, sisi LIMIT terhadap Ask/Bid, stop/freeze level, R:R minimum, risiko, lot minimum, batas rugi harian, jumlah posisi aktif.
+- Catatan: bukti rekam jejak Judge berasal dari paper trade mode near. Mode plan belum punya rekam jejak sendiri.
+
+## Kelas syarat dan AI opsional (patch modes2)
+- **Kelas syarat** (panel Eksekusi otomatis): Rendah = H1 minimal 5/8 dan M15 4/7; Sedang = 6/8 dan 5/7; Tinggi = 7/8 dan 6/7 (default); Skor = skor minimal (kolom "Skor min", default 70).
+- Kelas berlaku untuk mode "dekat harga" dan posisi paper (H1 dan M15 sama-sama dinilai). Di mode "Plan H1" hanya H1 yang dinilai karena LIMIT dipasang sebelum harga masuk zona; pada kelas Skor, skor dihitung dari H1 saja (H1 ok / 8 x 100).
+- **Brain AI tidak lagi memblokir order saat AI gagal.** Jika kunci AI kosong atau panggilan gagal (HTTP error, timeout, balasan bukan JSON), order lanjut sesuai aturan dan alasan kegagalan ditulis di log (baris BRN). AI hanya menahan order bila benar-benar menjawab "tolak". Untuk mematikan AI sepenuhnya, hapus centang "Brain AI menyetujui tiap order" lalu Terapkan.
+- Mengganti kelas mengubah populasi trade paper yang dinilai Judge; riwayat lama tidak direset.
