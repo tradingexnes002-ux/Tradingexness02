@@ -15,7 +15,7 @@ input string EaKey               = "GANTI_DENGAN_EA_KEY_ACAK";
 input bool   EnableExecution     = false; // MUST remain false until demo tests are complete
 input bool   AllowLiveAccount    = false; // false = reject all non-demo accounts
 input double MaxRiskPct          = 10.00; // hard EA cap, percent of equity (maks 10% per trade)
-input string SpecSymbols         = "BTCUSDm,BNBUSDm,XAUUSDm"; // simbol (persis seperti Market Watch) yang spesifikasi lotnya dilaporkan ke dashboard
+input string SpecSymbols         = "BTCUSDm,BNBUSDm,ETHUSDm,XAUUSDm"; // simbol (persis seperti Market Watch) yang spesifikasi lotnya dilaporkan ke dashboard
 input bool   AllowMinLotOverBudget = true;  // jika lot minimum broker melebihi anggaran risiko, pakai lot minimum asal risiko aktual <= MaxRiskPctWithMinLot (bukan ditolak)
 input double MaxRiskPctWithMinLot  = 10.0;   // plafon keras risiko aktual (% ekuitas) saat dipaksa memakai lot minimum; di atas ini order tetap ditolak
 input int    MaxSpreadPoints     = 0;     // batas keras spread dalam point; 0 = nonaktif (angka tetap tidak cocok untuk semua simbol)

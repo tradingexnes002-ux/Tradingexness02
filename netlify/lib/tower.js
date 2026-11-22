@@ -1,8 +1,8 @@
 // Control Tower: pemantauan terjadwal, posisi PAPER (simulasi), riwayat winrate, email. Tidak ada order ke broker.
 const core = require('./core');
-const DEF = { enabled: false, symbols: [], htf: '1h', ltf: '15min', rr: 3, aiOpen: true, emailH: true, emailM: true, emailMn: true, emailPos: true, maxOpen: 3, modal: 2000000, riskPct: 1, auto: { enabled: false, dryRun: true, brain: true, judgeGate: true, judgeN: 30, costR: 0.1, riskPct: 0.25, maxDailyLossPct: 3, maxOpen: 1, cooldownMin: 30, kill: false, mode: 'near', cls: 'high', minSkor: 70 } };
+const DEF = { enabled: false, symbols: [], htf: '1h', ltf: '15min', rr: 3, aiOpen: true, emailH: true, emailM: true, emailMn: true, emailPos: true, maxOpen: 3, paperPlan: true, modal: 2000000, riskPct: 1, auto: { enabled: false, dryRun: true, brain: true, judgeGate: true, judgeN: 30, costR: 0.1, riskPct: 0.25, maxDailyLossPct: 3, maxOpen: 1, cooldownMin: 30, kill: false, mode: 'near', cls: 'high', minSkor: 70 } };
 const idr = n => (n < 0 ? '-' : '') + 'Rp' + String(Math.abs(Math.round(n))).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
-const fresh = () => ({ positions: [], history: [], last: {}, log: [], counts: { SCN: 0, ANA: 0, BRN: 0, EXE: 0, RSK: 0 }, emails: 0, lastRun: null });
+const fresh = () => ({ positions: [], pending: [], used: {}, history: [], last: {}, log: [], counts: { SCN: 0, ANA: 0, BRN: 0, EXE: 0, RSK: 0 }, emails: 0, lastRun: null });
 const ttlOf = iv => ({ '1h': 600000, '2h': 900000, '4h': 1800000, '1day': 3600000 })[iv] || 600000;
 const getCfg = async store => ({ ...DEF, ...((await store.get('config', { type: 'json' }).catch(() => null)) || {}) });
 const getState = async (store, cfg = DEF) => {
@@ -197,6 +197,26 @@ async function runOnce(store, manual, mt5) {
       const src = await core.pickSource(sym, [cfg.ltf, cfg.htf]), v = (await core.candles(sym, cfg.ltf, 100, 50000, src)).slice(0, -1), vh = await htfData(store, sym, cfg.htf, src);
       if (prev.src && prev.src !== src) ev(st, 'SCN', sym, 'sumber data beralih ke ' + (src === 'exness' ? 'Exness' : 'Twelve Data'));
       const g = core.god(vh, v, cfg.rr, { h: cfg.htf, l: cfg.ltf }), price = v[v.length - 1].c, lastT = v[v.length - 1].t;
+      // PLAN H1 (paper): pending LIMIT mengikuti plan dashboard. Terisi saat harga menyentuh entry, lalu dipantau SL/TP seperti posisi biasa.
+      st.pending = st.pending || [];
+      for (const q of st.pending.filter(x => x.s === sym)) {
+        let fillT = null, why = null, prevT = q.lastT;
+        for (const x of v.filter(c => c.t > q.lastT)) {
+          q.bars++;
+          if (q.dir === 'BUY' ? x.l <= q.entry : x.h >= q.entry) { fillT = x.t; break; }
+          if (q.dir === 'BUY' ? x.h >= q.tp1 : x.l <= q.tp1) { why = 'target tercapai sebelum entry tersentuh'; break; }
+          prevT = x.t;
+        }
+        if (!fillT && !why && q.bars >= 192) why = 'kedaluwarsa (48 jam)';
+        if (fillT && (st.balance <= 0 || st.positions.length >= cfg.maxOpen)) { why = 'slot posisi penuh'; fillT = null; }
+        if (fillT) {
+          const pos = { id: q.id, s: sym, a: asset, dir: q.dir, entry: q.entry, sl: q.sl, tp1: q.tp1, tp2: q.tp2, rr: q.rr, tOpen: Date.now(), lastT: prevT, bars: 0, riskRp: Math.round(st.balance * cfg.riskPct / 100), grade: q.grade, hOk: q.hOk, mOk: 0, why: 'plan H1 terisi', src: 'plan' };
+          st.positions.push(pos); st.pending = st.pending.filter(x => x !== q); (st.used = st.used || {})[sym] = q.dir + '|' + q.entry + '|' + q.sl + '|' + q.tp1;
+          ev(st, 'EXE', sym, `${q.dir} LIMIT plan terisi @${q.entry} SL ${q.sl} TP ${q.tp1} · risiko ${idr(pos.riskRp)}`);
+          await mail(st, cfg, 'Pos', `🚀 Plan H1 terisi (paper): ${sym} ${q.dir}`, [['Simbol', sym], ['Arah', q.dir], ['Entry', q.entry], ['SL', q.sl], ['TP1', q.tp1], ['R:R', '1:' + q.rr], ['Risiko', idr(pos.riskRp)], ['Potensi TP1', idr(pos.riskRp * q.rr)], ['Saldo', idr(st.balance)]]);
+        } else if (why) { st.pending = st.pending.filter(x => x !== q); ev(st, 'EXE', sym, `plan ${q.dir} @${q.entry} dibatalkan: ${why}`); }
+        else q.lastT = lastT;
+      }
       // RSK: periksa posisi terbuka
       for (const p of st.positions.filter(x => x.s === sym)) {
         let res = null;
@@ -218,6 +238,18 @@ async function runOnce(store, manual, mt5) {
         } else ev(st, 'RSK', sym, `pantau posisi ${p.dir}: harga ${price}, SL ${p.sl}, TP ${p.tp1}`);
       }
       ev(st, 'SCN', sym, `${g.htf} ${g.h.ok}/8 · ${g.ltf} ${g.m.ok}/7 · ${g.status}`);
+      if (cfg.paperPlan !== false) {
+        const cur = st.pending.find(x => x.s === sym), hasPos = st.positions.some(x => x.s === sym);
+        const passive = g.entry != null && (g.dir === 'BUY' ? g.entry <= price : g.entry >= price);
+        const ok = g.h.layak && ['MENUNGGU', 'DEKAT ENTRY'].includes(g.status) && passive && g.sl != null && g.tp1 != null && (g.rr || 0) >= cfg.rr;
+        if (cur && (!ok || cur.entry !== g.entry || cur.sl !== g.sl || cur.tp1 !== g.tp1 || cur.dir !== g.dir)) {
+          st.pending = st.pending.filter(x => x !== cur); ev(st, 'ANA', sym, `plan lama ${cur.dir} @${cur.entry} diganti/dibatalkan (plan ${g.htf} berubah)`);
+        }
+        if (ok && !hasPos && (st.used || {})[sym] !== g.dir + '|' + g.entry + '|' + g.sl + '|' + g.tp1 && !st.pending.some(x => x.s === sym) && st.pending.length + st.positions.length < cfg.maxOpen && st.balance > 0) {
+          st.pending.push({ id: Date.now().toString(36) + sym.replace(/\W/g, ''), s: sym, dir: g.dir, entry: g.entry, sl: g.sl, tp1: g.tp1, tp2: g.tp2, rr: g.rr, zone: [g.entryLo, g.entryHi], h1time: g.h1time, lastT, bars: 0, tCreate: Date.now(), grade: g.grade, hOk: g.h.ok });
+          ev(st, 'ANA', sym, `plan ${g.htf} dipasang: ${g.dir} LIMIT @${g.entry} SL ${g.sl} TP ${g.tp1} (R:R 1:${g.rr})`);
+        }
+      }
       if (g.h.ok >= 7 && !(prev.hOk >= 7))
         await mail(st, cfg, 'H', `📊 ${sym} ${g.dir}: ${g.htf} ${g.h.ok}/8 syarat terpenuhi`, [['Simbol', sym], ['Arah', g.dir], ['Syarat acuan', g.h.ok + '/8'], ['Layak pantau', g.h.layak ? 'ya' : 'belum'], ['Entry limit', g.entry], ['SL', g.sl], ['TP1', g.tp1], ['R:R', '1:' + g.rr], ['Status', g.status]]);
       const mk = g.m.ok, NM = { zone: 'harga di zona', conf: 'konfirmasi kuat', rr: 'R:R', vol: 'volatilitas', choch: 'struktur mikro', ema: 'EMA searah', rsi: 'RSI/momentum' };
@@ -235,7 +267,7 @@ async function runOnce(store, manual, mt5) {
         if (mt5 && !planAuto) {
           await autoReport(st, cfg, await autoQueue(mt5, cfg, g, sym, price, st), g, sym);
         }
-        if (cfg.aiOpen && eligible && !st.positions.some(x => x.s === sym) && st.positions.length < cfg.maxOpen && g.m.entry != null && st.balance > 0) {
+        if (cfg.aiOpen && eligible && !st.positions.some(x => x.s === sym) && !st.pending.some(x => x.s === sym) && st.positions.length < cfg.maxOpen && g.m.entry != null && st.balance > 0) {
           const b = await brain(sym, g); ev(st, 'BRN', sym, (b.ok ? 'setuju: ' : 'menolak: ') + b.note);
           if (b.ok) {
             const pos = { id: Date.now().toString(36), s: sym, a: asset, dir: g.dir, entry: g.m.entry, sl: g.m.sl, tp1: g.m.tp != null ? g.m.tp : g.tp1, tp2: g.tp2, rr: g.m.rr, tOpen: Date.now(), lastT, bars: 0, riskRp: Math.round(st.balance * cfg.riskPct / 100), grade: g.grade, hOk: g.h.ok, mOk: g.m.ok, why: b.note };

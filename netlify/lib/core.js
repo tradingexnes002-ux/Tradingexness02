@@ -226,7 +226,7 @@ function god(v1raw, v15, minRR = 3, tf = {}) {
   const skor = Math.round(50 * hOk / 8 + 50 * mOk / 7), entryEligible = skor >= 70 && mOk >= 6 && mEntry !== null && (mRr || 0) >= minRR, grade = entryEligible ? (skor >= 85 ? 'A' : 'B') : 'C';
   const dead = buy ? price <= sl : price >= sl, done = buy ? price >= tp1 : price <= tp1;
   let status;
-  if (!hchk.aktif || (inZone && !chk.vol)) status = 'PASAR SEPI'; else if (dead) status = 'BATAL'; else if (done) status = 'SELESAI'; else if (!layak && !entryEligible) status = 'BELUM LAYAK';
+  if (!hchk.aktif || (inZone && !chk.vol)) status = 'PASAR SEPI'; else if (dead) status = 'BATAL'; else if (done) status = 'TERLEWAT'; // harga sudah melewati TP1: plan basi (belum tentu entry pernah terisi) else if (!layak && !entryEligible) status = 'BELUM LAYAK';
   else if (inZone) status = !chk.rr ? 'RR KECIL' : entryEligible ? 'SIAP ENTRY' : 'DI ZONA';
   else status = dist <= 0.5 ? 'DEKAT ENTRY' : 'MENUNGGU';
   const sT = kuat ? 100 : 50, sP = Math.min(100, Math.round(rrRaw / minRR * 100));

@@ -9,7 +9,7 @@
 
 input string ServerUrl     = "https://NAMA-SITUS-ANDA.netlify.app/.netlify/functions/ingest";
 input string EaKey         = "ISI_DENGAN_EA_KEY";
-input string SymbolList    = "XAUUSD"; // simbol Gold akun pengguna, persis seperti Market Watch
+input string SymbolList    = "BTCUSDm,BNBUSDm,ETHUSDm,XAUUSDm"; // simbol Gold akun pengguna, persis seperti Market Watch
 input string TimeframeList = "M5,M15,H1,H4";
 input int    FullBars      = 300;   // jumlah candle saat kirim penuh
 input int    IntervalSec   = 5;     // jeda kirim (detik); 5 detik = pembaruan mendekati real-time
