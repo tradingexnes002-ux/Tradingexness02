@@ -1,6 +1,6 @@
 // Control Tower: pemantauan terjadwal, posisi PAPER (simulasi), riwayat winrate, email. Tidak ada order ke broker.
 const core = require('./core');
-const DEF = { enabled: false, symbols: [], htf: '1h', ltf: '15min', rr: 3, aiOpen: true, emailH: true, emailM: true, emailMn: true, emailPos: true, maxOpen: 3, paperPlan: true, modal: 2000000, riskPct: 1, auto: { enabled: false, dryRun: true, brain: true, judgeGate: true, judgeN: 30, costR: 0.1, riskPct: 0.25, maxDailyLossPct: 3, maxOpen: 1, cooldownMin: 30, kill: false, mode: 'near', cls: 'high', minSkor: 70 } };
+const DEF = { enabled: false, symbols: [], htf: '1h', ltf: '15min', rr: 3, aiOpen: true, emailH: true, emailM: true, emailMn: true, emailPos: true, maxOpen: 6, paperPlan: true, paperCls: 'low', modal: 2000000, riskPct: 1, auto: { enabled: false, dryRun: true, brain: true, judgeGate: true, judgeN: 30, costR: 0.1, riskPct: 0.25, maxDailyLossPct: 3, maxOpen: 1, cooldownMin: 30, kill: false, mode: 'near', cls: 'high', minSkor: 70 } };
 const idr = n => (n < 0 ? '-' : '') + 'Rp' + String(Math.abs(Math.round(n))).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
 const fresh = () => ({ positions: [], pending: [], used: {}, history: [], last: {}, log: [], counts: { SCN: 0, ANA: 0, BRN: 0, EXE: 0, RSK: 0 }, emails: 0, lastRun: null });
 const ttlOf = iv => ({ '1h': 600000, '2h': 900000, '4h': 1800000, '1day': 3600000 })[iv] || 600000;
@@ -207,14 +207,14 @@ async function runOnce(store, manual, mt5) {
           if (q.dir === 'BUY' ? x.h >= q.tp1 : x.l <= q.tp1) { why = 'target tercapai sebelum entry tersentuh'; break; }
           prevT = x.t;
         }
-        if (!fillT && !why && q.bars >= 192) why = 'kedaluwarsa (48 jam)';
+        if (!fillT && !why && q.bars >= (q.kind === 'M15' ? 64 : 192)) why = q.kind === 'M15' ? 'kedaluwarsa (16 jam)' : 'kedaluwarsa (48 jam)';
         if (fillT && (st.balance <= 0 || st.positions.length >= cfg.maxOpen)) { why = 'slot posisi penuh'; fillT = null; }
         if (fillT) {
-          const pos = { id: q.id, s: sym, a: asset, dir: q.dir, entry: q.entry, sl: q.sl, tp1: q.tp1, tp2: q.tp2, rr: q.rr, tOpen: Date.now(), lastT: prevT, bars: 0, riskRp: Math.round(st.balance * cfg.riskPct / 100), grade: q.grade, hOk: q.hOk, mOk: 0, why: 'plan H1 terisi', src: 'plan' };
-          st.positions.push(pos); st.pending = st.pending.filter(x => x !== q); (st.used = st.used || {})[sym] = q.dir + '|' + q.entry + '|' + q.sl + '|' + q.tp1;
-          ev(st, 'EXE', sym, `${q.dir} LIMIT plan terisi @${q.entry} SL ${q.sl} TP ${q.tp1} · risiko ${idr(pos.riskRp)}`);
-          await mail(st, cfg, 'Pos', `🚀 Plan H1 terisi (paper): ${sym} ${q.dir}`, [['Simbol', sym], ['Arah', q.dir], ['Entry', q.entry], ['SL', q.sl], ['TP1', q.tp1], ['R:R', '1:' + q.rr], ['Risiko', idr(pos.riskRp)], ['Potensi TP1', idr(pos.riskRp * q.rr)], ['Saldo', idr(st.balance)]]);
-        } else if (why) { st.pending = st.pending.filter(x => x !== q); ev(st, 'EXE', sym, `plan ${q.dir} @${q.entry} dibatalkan: ${why}`); }
+          const pos = { id: q.id, kind: q.kind || 'H1', s: sym, a: asset, dir: q.dir, entry: q.entry, sl: q.sl, tp1: q.tp1, tp2: q.tp2, rr: q.rr, tOpen: Date.now(), lastT: prevT, bars: 0, riskRp: Math.round(st.balance * cfg.riskPct / 100), grade: q.grade, hOk: q.hOk, mOk: 0, why: 'plan ' + (q.kind || 'H1') + ' terisi', src: 'plan' };
+          st.positions.push(pos); st.pending = st.pending.filter(x => x !== q); (st.used = st.used || {})[sym + '|' + q.kind] = q.ukey;
+          ev(st, 'EXE', sym, `[${q.kind}] ${q.dir} LIMIT plan terisi @${q.entry} SL ${q.sl} TP ${q.tp1} · risiko ${idr(pos.riskRp)}`);
+          await mail(st, cfg, 'Pos', `🚀 Plan ${q.kind} terisi (paper): ${sym} ${q.dir}`, [['Simbol', sym], ['Arah', q.dir], ['Entry', q.entry], ['SL', q.sl], ['TP1', q.tp1], ['R:R', '1:' + q.rr], ['Risiko', idr(pos.riskRp)], ['Potensi TP1', idr(pos.riskRp * q.rr)], ['Saldo', idr(st.balance)]]);
+        } else if (why) { st.pending = st.pending.filter(x => x !== q); ev(st, 'EXE', sym, `plan [${q.kind}] ${q.dir} @${q.entry} dibatalkan: ${why}`); }
         else q.lastT = lastT;
       }
       // RSK: periksa posisi terbuka
@@ -239,15 +239,20 @@ async function runOnce(store, manual, mt5) {
       }
       ev(st, 'SCN', sym, `${g.htf} ${g.h.ok}/8 · ${g.ltf} ${g.m.ok}/7 · ${g.status}`);
       if (cfg.paperPlan !== false) {
-        const cur = st.pending.find(x => x.s === sym), hasPos = st.positions.some(x => x.s === sym);
-        const passive = g.entry != null && (g.dir === 'BUY' ? g.entry <= price : g.entry >= price);
-        const ok = g.h.layak && ['MENUNGGU', 'DEKAT ENTRY'].includes(g.status) && passive && g.sl != null && g.tp1 != null && (g.rr || 0) >= cfg.rr;
-        if (cur && (!ok || cur.entry !== g.entry || cur.sl !== g.sl || cur.tp1 !== g.tp1 || cur.dir !== g.dir)) {
-          st.pending = st.pending.filter(x => x !== cur); ev(st, 'ANA', sym, `plan lama ${cur.dir} @${cur.entry} diganti/dibatalkan (plan ${g.htf} berubah)`);
-        }
-        if (ok && !hasPos && (st.used || {})[sym] !== g.dir + '|' + g.entry + '|' + g.sl + '|' + g.tp1 && !st.pending.some(x => x.s === sym) && st.pending.length + st.positions.length < cfg.maxOpen && st.balance > 0) {
-          st.pending.push({ id: Date.now().toString(36) + sym.replace(/\W/g, ''), s: sym, dir: g.dir, entry: g.entry, sl: g.sl, tp1: g.tp1, tp2: g.tp2, rr: g.rr, zone: [g.entryLo, g.entryHi], h1time: g.h1time, lastT, bars: 0, tCreate: Date.now(), grade: g.grade, hOk: g.h.ok });
-          ev(st, 'ANA', sym, `plan ${g.htf} dipasang: ${g.dir} LIMIT @${g.entry} SL ${g.sl} TP ${g.tp1} (R:R 1:${g.rr})`);
+        const BAD = ['TERLEWAT', 'BATAL', 'PASAR SEPI'], hOkGate = classPass(g, { cls: cfg.paperCls || 'low' }, true) && !BAD.includes(g.status) && g.sl != null && g.tp1 != null;
+        const pl = g.m.plan, passive = e => e != null && (g.dir === 'BUY' ? e <= price : e >= price);
+        // Dua jalur terpisah: H1 = LIMIT di tepi zona H1 (target jauh); M15 = LIMIT pullback EMA20 M15 (lebih dekat, SL/TP skala M15).
+        const specs = [
+          { kind: 'H1', valid: hOkGate && (g.rr || 0) >= cfg.rr, entry: g.entry, sl: g.sl, tp1: g.tp1, tp2: g.tp2, rr: g.rr, ukey: g.dir + '|' + g.entry + '|' + g.sl + '|' + g.tp1, same: c => c.entry === g.entry && c.sl === g.sl && c.tp1 === g.tp1 && c.dir === g.dir },
+          { kind: 'M15', valid: hOkGate && g.m.chk.ema && g.m.chk.vol && pl && pl.rr >= cfg.rr && pl.entry !== g.entry, entry: pl && pl.entry, sl: pl && pl.sl, tp1: pl && pl.tp, tp2: null, rr: pl && pl.rr, ukey: 'M15|' + g.dir + '|' + g.h1time, same: c => c.h1time === g.h1time && c.dir === g.dir }
+        ];
+        for (const sp of specs) {
+          const cur = st.pending.find(x => x.s === sym && x.kind === sp.kind), hasPos = st.positions.some(x => x.s === sym && (x.kind || 'H1') === sp.kind);
+          if (cur && (!sp.valid || !sp.same(cur))) { st.pending = st.pending.filter(x => x !== cur); ev(st, 'ANA', sym, `plan [${sp.kind}] ${cur.dir} @${cur.entry} diganti/dibatalkan (plan berubah)`); }
+          if (sp.valid && passive(sp.entry) && !hasPos && !st.pending.some(x => x.s === sym && x.kind === sp.kind) && (st.used || {})[sym + '|' + sp.kind] !== sp.ukey && st.pending.length + st.positions.length < cfg.maxOpen && st.balance > 0) {
+            st.pending.push({ id: Date.now().toString(36) + sym.replace(/\W/g, '') + sp.kind, kind: sp.kind, s: sym, dir: g.dir, entry: sp.entry, sl: sp.sl, tp1: sp.tp1, tp2: sp.tp2, rr: sp.rr, h1time: g.h1time, ukey: sp.ukey, lastT, bars: 0, tCreate: Date.now(), grade: g.grade, hOk: g.h.ok });
+            ev(st, 'ANA', sym, `plan [${sp.kind}] dipasang: ${g.dir} LIMIT @${sp.entry} SL ${sp.sl} TP ${sp.tp1} (R:R 1:${sp.rr})`);
+          }
         }
       }
       if (g.h.ok >= 7 && !(prev.hOk >= 7))
@@ -267,10 +272,10 @@ async function runOnce(store, manual, mt5) {
         if (mt5 && !planAuto) {
           await autoReport(st, cfg, await autoQueue(mt5, cfg, g, sym, price, st), g, sym);
         }
-        if (cfg.aiOpen && eligible && !st.positions.some(x => x.s === sym) && !st.pending.some(x => x.s === sym) && st.positions.length < cfg.maxOpen && g.m.entry != null && st.balance > 0) {
+        if (cfg.aiOpen && eligible && !st.positions.some(x => x.s === sym && x.kind === 'KONF') && st.positions.length < cfg.maxOpen && g.m.entry != null && st.balance > 0) {
           const b = await brain(sym, g); ev(st, 'BRN', sym, (b.ok ? 'setuju: ' : 'menolak: ') + b.note);
           if (b.ok) {
-            const pos = { id: Date.now().toString(36), s: sym, a: asset, dir: g.dir, entry: g.m.entry, sl: g.m.sl, tp1: g.m.tp != null ? g.m.tp : g.tp1, tp2: g.tp2, rr: g.m.rr, tOpen: Date.now(), lastT, bars: 0, riskRp: Math.round(st.balance * cfg.riskPct / 100), grade: g.grade, hOk: g.h.ok, mOk: g.m.ok, why: b.note };
+            const pos = { id: Date.now().toString(36), kind: 'KONF', s: sym, a: asset, dir: g.dir, entry: g.m.entry, sl: g.m.sl, tp1: g.m.tp != null ? g.m.tp : g.tp1, tp2: g.tp2, rr: g.m.rr, tOpen: Date.now(), lastT, bars: 0, riskRp: Math.round(st.balance * cfg.riskPct / 100), grade: g.grade, hOk: g.h.ok, mOk: g.m.ok, why: b.note };
             st.positions.push(pos); ev(st, 'EXE', sym, `${g.dir} paper dibuka @${pos.entry} SL ${pos.sl} TP ${pos.tp1} · risiko ${idr(pos.riskRp)}`);
             await mail(st, cfg, 'Pos', `🚀 AI membuka posisi (paper): ${sym} ${g.dir}`, [['Simbol', sym], ['Arah', g.dir], ['Entry', pos.entry], ['SL', pos.sl], ['TP1', pos.tp1], ['R:R', '1:' + pos.rr], ['Risiko', idr(pos.riskRp)], ['Potensi TP1', idr(pos.riskRp * (Math.abs(pos.tp1 - pos.entry) / (Math.abs(pos.entry - pos.sl) || 1)))], ['Saldo', idr(st.balance)], ['Grade', g.grade], ['Alasan AI', b.note]]);
           }

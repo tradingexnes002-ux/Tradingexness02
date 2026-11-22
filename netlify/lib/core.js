@@ -218,22 +218,30 @@ function god(v1raw, v15, minRR = 3, tf = {}) {
   let pRw = buy ? tp1 - pE : pE - tp1, pTp = tp1;
   if (pRw > RR_MAX * pRisk) { pRw = RR_MAX * pRisk; pTp = buy ? pE + pRw : pE - pRw; }
   const pRr = pRw > 0 ? +(pRw / pRisk).toFixed(2) : 0;
+  // Entry M15 (pullback): limit di EMA20 M15 searah plan, lebih dekat ke harga daripada tepi zona H1. Dijepit antara harga±0.5 ATR M15 dan tepi zona H1; bila harga sudah dekat zona, pakai tepi zona.
+  const gap = 0.5 * A15; let qE = pE;
+  if (buy ? price - gap >= pE : price + gap <= pE) qE = buy ? Math.min(Math.max(m20[ln], pE), price - gap) : Math.max(Math.min(m20[ln], pE), price + gap);
+  const r8q = v15.slice(-8), sw = buy ? Math.min(...r8q.map(x => x.l)) - 0.3 * A15 : Math.max(...r8q.map(x => x.h)) + 0.3 * A15;
+  const qRisk = SL_MULT * Math.max(A15, buy ? qE - sw : sw - qE), qSl = buy ? qE - qRisk : qE + qRisk;
+  let qRw = buy ? tp1 - qE : qE - tp1, qTp = tp1;
+  if (qRw > RR_MAX * qRisk) { qRw = RR_MAX * qRisk; qTp = buy ? qE + qRw : qE - qRw; }
+  const qRr = qRw > 0 ? +(qRw / qRisk).toFixed(2) : 0;
   // EMA M15: searah tren H1, ATAU harga sudah merebut EMA9 M15 searah plan (momen balik arah setelah pullback; EMA20/50 yang lambat masih sempat melawan).
   const m9 = ema(cl15, 9), emaOk = (buy ? ltfTrend === 'naik' : ltfTrend === 'turun') || (buy ? last.c > m9[ln] : last.c < m9[ln]);
-  const chk = { zone: inZone, conf: strong, rr: (mRr !== null ? mRr : Math.max(rr, pRr)) >= minRR, vol: act(v15), choch,
+  const chk = { zone: inZone, conf: strong, rr: (mRr !== null ? mRr : Math.max(rr, qRr)) >= minRR, vol: act(v15), choch,
     ema: emaOk, rsi: buy ? (R15 < 70 && R15 >= R15b) : (R15 > 30 && R15 <= R15b) };
   const mCore = chk.zone && chk.conf && chk.rr && chk.vol, mOk = Object.values(chk).filter(Boolean).length;
   const skor = Math.round(50 * hOk / 8 + 50 * mOk / 7), entryEligible = skor >= 70 && mOk >= 6 && mEntry !== null && (mRr || 0) >= minRR, grade = entryEligible ? (skor >= 85 ? 'A' : 'B') : 'C';
   const dead = buy ? price <= sl : price >= sl, done = buy ? price >= tp1 : price <= tp1;
   let status;
-  if (!hchk.aktif || (inZone && !chk.vol)) status = 'PASAR SEPI'; else if (dead) status = 'BATAL'; else if (done) status = 'TERLEWAT'; // harga sudah melewati TP1: plan basi (belum tentu entry pernah terisi) else if (!layak && !entryEligible) status = 'BELUM LAYAK';
+  if (!hchk.aktif || (inZone && !chk.vol)) status = 'PASAR SEPI'; else if (dead) status = 'BATAL'; else if (done) status = 'TERLEWAT'; else if (!layak && !entryEligible) status = 'BELUM LAYAK'; // TERLEWAT = harga sudah melewati TP1 (plan basi)
   else if (inZone) status = !chk.rr ? 'RR KECIL' : entryEligible ? 'SIAP ENTRY' : 'DI ZONA';
   else status = dist <= 0.5 ? 'DEKAT ENTRY' : 'MENUNGGU';
   const sT = kuat ? 100 : 50, sP = Math.min(100, Math.round(rrRaw / minRR * 100));
   const d = price > 100 ? 2 : 5, f = x => +x.toFixed(d), zz = q => q && q.map(f);
   return { trend, kuat, h1signal, h1time: v1[n].t, dir: buy ? 'BUY' : 'SELL', basis, htf: tf.h || '1h', ltf: tf.l || '15min', h: { chk: hchk, ok: hOk, total: 8, core: hCore, layak }, grade,
     m: { trend: ltfTrend, rsi: +R15.toFixed(1), atr: +A15.toPrecision(3), chk, ok: mOk, total: 7, core: mCore, entry: mEntry === null ? null : f(mEntry), sl: mSl === null ? null : f(mSl), tp: mTp === null ? null : f(mTp), rr: mRr,
-      plan: { entry: f(pE), sl: f(pSl), tp: f(pTp), rr: pRr, armed: mEntry !== null } }, entry: f(entry), entryLo: f(lo), entryHi: f(hi), sl: f(sl),
+      plan: qE === pE ? { entry: f(pE), sl: f(pSl), tp: f(pTp), rr: pRr, armed: mEntry !== null, basis: 'tepi zona H1' } : { entry: f(qE), sl: f(qSl), tp: f(qTp), rr: qRr, armed: mEntry !== null, basis: 'pullback EMA20 M15' } }, entry: f(entry), entryLo: f(lo), entryHi: f(hi), sl: f(sl),
     tp1: f(tp1), tp2: tp2 === null ? null : f(tp2), tp: f(tp1), rr, minRR, status, dist, trig: status === 'SIAP ENTRY',
     supply: zz(supZ), demand: zz(demZ), skorTrend: sT, skorPotensi: sP, skor, entryEligible, planEligible: skor >= 70 };
 }
