@@ -201,16 +201,15 @@ function god(v1raw, v15, minRR = 3, tf = {}) {
   // Struktur mikro: close menembus extreme 3 candle sebelumnya (dulu 6 candle, terlalu telat untuk momen balik dari zona).
   const p6 = v15.slice(-4, -1);
   const choch = buy ? last.c > Math.max(...p6.map(x => x.h)) : last.c < Math.min(...p6.map(x => x.l));
+  // Entry M15 percobaan di harga sekarang: SL = ekstrem 8 candle M15 (min 1 ATR M15) x SL_MULT. TP = target struktural H1 (maks 1:RR_MAX);
+  // bila target struktural sudah terlewat/terlalu dekat (< minRR), TP dipasang 1:minRR dari harga. Entry baru DIKUNCI saat syarat M15 >= m15Min (default 6/7).
   let mEntry = null, mSl = null, mRr = null, mTp = null;
-  if (inZone && strong) {
-    const r8 = v15.slice(-8);
-    mSl = buy ? Math.min(...r8.map(x => x.l)) - 0.3 * A15 : Math.max(...r8.map(x => x.h)) + 0.3 * A15;
-    let rk = Math.abs(price - mSl); if (rk < A15) rk = A15;
-    rk *= SL_MULT; mSl = buy ? price - rk : price + rk;
-    let rw = buy ? tp1 - price : price - tp1;
-    if (rw > RR_MAX * rk) { rw = RR_MAX * rk; mTp = buy ? price + rw : price - rw; } else mTp = tp1;
-    mEntry = price; mRr = rw > 0 ? +(rw / rk).toFixed(2) : 0;
-  }
+  const r8 = v15.slice(-8), swSl = buy ? Math.min(...r8.map(x => x.l)) - 0.3 * A15 : Math.max(...r8.map(x => x.h)) + 0.3 * A15;
+  const rkT = SL_MULT * Math.max(Math.abs(price - swSl), A15), slT = buy ? price - rkT : price + rkT;
+  const rwS = buy ? tp1 - price : price - tp1, rrS = rwS > 0 ? Math.min(rwS, RR_MAX * rkT) / rkT : 0;
+  let rwT, tpT, tpBasis = 'struktur H1';
+  if (rwS >= minRR * rkT) { rwT = Math.min(rwS, RR_MAX * rkT); tpT = rwS > RR_MAX * rkT ? (buy ? price + rwT : price - rwT) : tp1; }
+  else { rwT = minRR * rkT; tpT = buy ? price + rwT : price - rwT; tpBasis = 'R:R 1:' + minRR + ' (target H1 terlewat/dekat)'; }
   // Rencana M15 bersyarat: selalu dihitung dari zona H1 (limit di tepi zona, SL tepat di balik zona dengan buffer ATR M15), walau harga belum sampai.
   const pE = buy ? hi : lo; let pSl = buy ? lo - 0.3 * A15 : hi + 0.3 * A15, pRisk = Math.abs(pE - pSl);
   if (pRisk < A15) pRisk = A15;
@@ -220,9 +219,11 @@ function god(v1raw, v15, minRR = 3, tf = {}) {
   const pRr = pRw > 0 ? +(pRw / pRisk).toFixed(2) : 0;
   // EMA M15: searah tren H1, ATAU harga sudah merebut EMA9 M15 searah plan (momen balik arah setelah pullback; EMA20/50 yang lambat masih sempat melawan).
   const m9 = ema(cl15, 9), emaOk = (buy ? ltfTrend === 'naik' : ltfTrend === 'turun') || (buy ? last.c > m9[ln] : last.c < m9[ln]);
-  const chk = { zone: inZone, conf: strong, rr: (mRr !== null ? mRr : Math.max(rr, pRr)) >= minRR, vol: act(v15), choch,
+  const chk = { zone: inZone, conf: strong, rr: ((inZone && strong) ? rrS : Math.max(rr, pRr)) >= minRR, vol: act(v15), choch,
     ema: emaOk, rsi: buy ? (R15 < 70 && R15 >= R15b) : (R15 > 30 && R15 <= R15b) };
   const mCore = chk.zone && chk.conf && chk.rr && chk.vol, mOk = Object.values(chk).filter(Boolean).length;
+  const m15Min = +(tf.m15Min) || 6, deadNow = buy ? price <= sl : price >= sl;
+  if (mOk >= m15Min && !deadNow) { mEntry = price; mSl = slT; mTp = tpT; mRr = +(rwT / rkT).toFixed(2); }
   const skor = Math.round(50 * hOk / 8 + 50 * mOk / 7), entryEligible = skor >= 70 && mOk >= 6 && mEntry !== null && (mRr || 0) >= minRR, grade = entryEligible ? (skor >= 85 ? 'A' : 'B') : 'C';
   const dead = buy ? price <= sl : price >= sl, done = buy ? price >= tp1 : price <= tp1;
   let status;
@@ -232,7 +233,7 @@ function god(v1raw, v15, minRR = 3, tf = {}) {
   const sT = kuat ? 100 : 50, sP = Math.min(100, Math.round(rrRaw / minRR * 100));
   const d = price > 100 ? 2 : 5, f = x => +x.toFixed(d), zz = q => q && q.map(f);
   return { trend, kuat, h1signal, h1time: v1[n].t, dir: buy ? 'BUY' : 'SELL', basis, htf: tf.h || '1h', ltf: tf.l || '15min', h: { chk: hchk, ok: hOk, total: 8, core: hCore, layak }, grade,
-    m: { trend: ltfTrend, rsi: +R15.toFixed(1), atr: +A15.toPrecision(3), chk, ok: mOk, total: 7, core: mCore, entry: mEntry === null ? null : f(mEntry), sl: mSl === null ? null : f(mSl), tp: mTp === null ? null : f(mTp), rr: mRr,
+    m: { tpBasis: mEntry === null ? null : tpBasis, trend: ltfTrend, rsi: +R15.toFixed(1), atr: +A15.toPrecision(3), chk, ok: mOk, total: 7, core: mCore, entry: mEntry === null ? null : f(mEntry), sl: mSl === null ? null : f(mSl), tp: mTp === null ? null : f(mTp), rr: mRr,
       plan: { entry: f(pE), sl: f(pSl), tp: f(pTp), rr: pRr, armed: mEntry !== null } }, entry: f(entry), entryLo: f(lo), entryHi: f(hi), sl: f(sl),
     tp1: f(tp1), tp2: tp2 === null ? null : f(tp2), tp: f(tp1), rr, minRR, status, dist, trig: status === 'SIAP ENTRY',
     supply: zz(supZ), demand: zz(demZ), skorTrend: sT, skorPotensi: sP, skor, entryEligible, planEligible: skor >= 70 };

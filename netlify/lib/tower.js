@@ -2,7 +2,7 @@
 const core = require('./core');
 const DEF = { enabled: false, symbols: [], htf: '1h', ltf: '15min', rr: 3, aiOpen: true, emailH: true, emailM: true, emailMn: true, emailPos: true, maxOpen: 6, paperPlan: true, paperCls: 'low', paperMode: 'h1', m15Min: 6, modal: 2000000, riskPct: 1, auto: { enabled: false, dryRun: true, brain: true, judgeGate: true, judgeN: 30, costR: 0.1, riskPct: 0.25, maxDailyLossPct: 3, maxOpen: 1, cooldownMin: 30, kill: false, mode: 'near', cls: 'high', minSkor: 70 } };
 const idr = n => (n < 0 ? '-' : '') + 'Rp' + String(Math.abs(Math.round(n))).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
-const fresh = () => ({ positions: [], pending: [], used: {}, history: [], last: {}, log: [], counts: { SCN: 0, ANA: 0, BRN: 0, EXE: 0, RSK: 0 }, emails: 0, lastRun: null });
+const fresh = () => ({ positions: [], pending: [], used: {}, real: {}, realWhy: {}, retrig: {}, history: [], last: {}, log: [], counts: { SCN: 0, ANA: 0, BRN: 0, EXE: 0, RSK: 0 }, emails: 0, lastRun: null });
 const ttlOf = iv => ({ '1h': 600000, '2h': 900000, '4h': 1800000, '1day': 3600000 })[iv] || 600000;
 const getCfg = async store => ({ ...DEF, ...((await store.get('config', { type: 'json' }).catch(() => null)) || {}) });
 const getState = async (store, cfg = DEF) => {
@@ -110,7 +110,7 @@ function judge(st, a = {}) {
   ];
   return { n, N, cost, avg: +avg.toFixed(3), pf: +pf.toFixed(2), dd: +dd.toFixed(2), winrate: dn ? Math.round(wins / dn * 100) : null, props, open: props.every(p => p.pass) };
 }
-const AUTO = { enabled: false, dryRun: true, brain: true, riskPct: 0.25, maxDailyLossPct: 3, maxOpen: 1, cooldownMin: 30, kill: false, mode: 'near', cls: 'high', minSkor: 70 };
+const AUTO = { enabled: false, dryRun: true, brain: true, riskPct: 0.25, maxDailyLossPct: 3, maxOpen: 1, cooldownMin: 30, kill: false, mode: 'near', cls: 'high', minSkor: 70, revise: true };
 // Antrean order otomatis ke MT5. Berlapis: gerbang server (env), saklar dashboard, kill switch, batas rugi harian, batas posisi aktif, jeda per simbol, dry-run.
 // Brain untuk eksekusi otomatis: hanya boleh MENAHAN order yang sudah lolos aturan, tidak pernah membuka order sendiri. Gagal = ditahan.
 async function brainAuto(sym, g, cmd, lossPct, real) {
@@ -125,6 +125,8 @@ async function brainAuto(sym, g, cmd, lossPct, real) {
 async function autoQueue(mt5, cfg, g, sym, price, st) {
   const a = { ...AUTO, ...(cfg.auto || {}) };
   if (!a.enabled) return { silent: true };
+  const exo = st && st.real && st.real[sym];
+  if (exo && !exo.dry) return { msg: `dilewati: order real ${sym} masih aktif/diproses (${exo.status}); Analyst akan merevisi bila plan berubah` };
   if (process.env.AUTO_TRADE_ENABLED !== 'true' || process.env.MT5_ORDERS_ENABLED !== 'true') return { msg: 'dilewati: gerbang server tertutup (AUTO_TRADE_ENABLED dan MT5_ORDERS_ENABLED harus true)' };
   const kill = await mt5.get('auto_kill', { type: 'json' }).catch(() => null);
   if (a.kill || (kill && kill.on)) return { msg: 'dilewati: kill switch aktif' };
@@ -168,15 +170,17 @@ async function autoQueue(mt5, cfg, g, sym, price, st) {
     bn = await brainAuto(sym, g, cmd, lossPct, real);
     if (!bn.ok) { if (!bn.failed) await markPlan(); return { msg: `Brain MENAHAN order (${bn.failed ? 'AI tidak tersedia atau gagal, ditahan demi keamanan' : 'menolak'}): ${bn.note} | ${info}`, brain: bn }; }
   }
-  if (dry) { await markPlan(); return { msg: 'DRY-RUN, tidak dikirim: ' + info, cmd, brain: bn }; }
+  const track = (id, d) => { if (st) (st.real = st.real || {})[sym] = { id, dry: d, status: d ? 'VIRTUAL' : 'QUEUED', side: g.dir, symbol, entry, sl, tp, riskPct, mode: a.mode, h1time: g.h1time, ref: { dir: g.dir, entry: g.entry, sl: g.sl, tp1: g.tp1 }, t: Date.now() }; };
+  if (dry) { await markPlan(); track('dry-' + Date.now().toString(36), true); return { msg: 'DRY-RUN, tidak dikirim: ' + info, cmd, brain: bn }; }
   const id = require('crypto').randomUUID();
   await mt5.setJSON('command_current', { id, ...cmd, status: 'PENDING', createdAt: Date.now(), expiresAt: Date.now() + 120000, source: 'auto-tower', preflight: 'ea-live-quote-required' });
   await mt5.setJSON(lk, { t: Date.now() });
-  await markPlan();
+  await markPlan(); track(id, false);
   return { msg: 'order diantrekan ke MT5: ' + info, notify: 'sent', cmd, brain: bn };
 }
 async function autoReport(st, cfg, au, g, sym) {
   if (au.silent) return;
+  (st.realWhy = st.realWhy || {})[sym] = { t: Date.now(), msg: String(au.msg || '').slice(0, 260) };
   // Pesan "dilewati" yang sama untuk simbol yang sama hanya dicatat sekali sampai alasannya berubah; kirim order/halt selalu dicatat.
   st.exeKey = st.exeKey || {};
   const key = au.notify ? '' : sym + '|' + String(au.msg || '').replace(/\(sisa[^)]*\)/, '').replace(/\d+(\.\d+)?%/g, '%') + '|' + (au.brain ? au.brain.note : '');
@@ -186,6 +190,75 @@ async function autoReport(st, cfg, au, g, sym) {
   ev(st, 'EXE', sym, 'AUTO ' + au.msg);
   if (au.notify === 'sent') await mail(st, cfg, 'Pos', `🤖 AUTO ORDER ${au.cmd.side} LIMIT ${au.cmd.symbol}`, [['Simbol', au.cmd.symbol], ['Order', au.cmd.side + ' LIMIT'], ['Entry', au.cmd.entry], ['SL', au.cmd.sl], ['TP', au.cmd.tp], ['Risiko', au.cmd.riskPct + '% ekuitas'], ['Skor', g.skor], ['Brain', au.brain ? au.brain.note : 'nonaktif']]);
   if (au.notify === 'halt') await mail(st, cfg, 'Pos', '⛔ Batas rugi harian tercapai: eksekusi otomatis berhenti hari ini', [['Rugi hari ini', au.lossPct.toFixed(1) + '%']]);
+}
+// Kirim perintah batal pending order ke EA (hanya order pending, posisi terisi tidak disentuh). Mengembalikan { ok, msg }.
+async function sendCancel(mt5, o, why) {
+  if (process.env.MT5_ORDERS_ENABLED !== 'true') return { ok: false, msg: 'MT5_ORDERS_ENABLED belum true' };
+  const acc = await mt5.get('account_report', { type: 'json' }).catch(() => null);
+  if (!acc || acc.connected !== true || Date.now() - acc.receivedAt > 60000) return { ok: false, msg: 'MT5 tidak terhubung / laporan basi' };
+  const cur = await mt5.get('command_current', { type: 'json' }).catch(() => null);
+  if (cur && cur.status === 'PENDING' && Date.now() - cur.createdAt < 120000) return { ok: false, msg: 'masih ada perintah belum diakui EA' };
+  const id = require('crypto').randomUUID();
+  await mt5.setJSON('command_current', { id, symbol: o.symbol, side: 'CANCEL', ticket: o.ticket || 0, status: 'PENDING', createdAt: Date.now(), expiresAt: Date.now() + 120000, source: 'analyst-real', reason: String(why).slice(0, 120) });
+  return { ok: true, id };
+}
+// ANALYST REAL: mencocokkan order real/virtual dengan plan terbaru. Plan berubah -> batalkan order lama, lalu plan baru dipasang otomatis oleh jalur eksekusi biasa.
+async function realAnalyst(mt5, st, cfg, g, sym, price) {
+  const a = { ...AUTO, ...(cfg.auto || {}) };
+  st.real = st.real || {}; st.retrig = st.retrig || {};
+  const o = st.real[sym]; if (!o) return;
+  const drop = (m, retrig) => { ev(st, 'ANA', sym, '[REAL] ' + m); delete st.real[sym]; if (retrig) st.retrig[sym] = true; };
+  if (!o.dry && mt5) {
+    const acc = await mt5.get('account_report', { type: 'json' }).catch(() => null), ack = await mt5.get('last_ack', { type: 'json' }).catch(() => null);
+    if (ack && ack.id === o.id && o.status === 'QUEUED') {
+      if (ack.ticket) o.ticket = ack.ticket;
+      if (ack.status === 'EXECUTED') { o.status = 'PENDING_MT5'; ev(st, 'EXE', sym, `[REAL] pending LIMIT diterima broker, tiket ${o.ticket || '-'}`); }
+      else if (['BLOCKED', 'REJECTED', 'FAILED', 'DUPLICATE'].includes(ack.status)) { drop(`order ditolak EA (${ack.status}): ${ack.message || ''}`, false); return; }
+      else if (ack.status === 'DRYRUN') { drop('EA masih DryRun: order tidak dikirim ke broker', false); return; }
+    }
+    if (o.cancelId && ack && ack.id === o.cancelId) {
+      if (['CANCELLED', 'DRYRUN'].includes(ack.status)) { drop(`order lama dibatalkan di MT5 (${ack.message || ack.status})`, true); return; }
+      ev(st, 'ANA', sym, `[REAL] pembatalan gagal (${ack.status}): ${ack.message || ''}; dicoba lagi`); o.cancelId = null; o.status = 'PENDING_MT5';
+    }
+    const accOk = acc && Date.now() - acc.receivedAt < 60000 && Array.isArray(acc.orders);
+    if (accOk && ['PENDING_MT5', 'TERISI'].includes(o.status)) {
+      const hasOrd = acc.orders.some(x => o.ticket ? String(x.tk) === String(o.ticket) : (x.s === o.symbol && x.side === o.side)), pos = (acc.positions || []).find(x => x.s === o.symbol);
+      if (hasOrd) { o.status = 'PENDING_MT5'; }
+      else if (pos) { if (o.status !== 'TERISI') { o.status = 'TERISI'; ev(st, 'EXE', sym, `[REAL] order terisi → posisi berjalan @${pos.px} (P/L ${pos.pr})`); } }
+      else { drop(o.status === 'TERISI' ? 'posisi real selesai (TP/SL/ditutup)' : 'pending order hilang di MT5 (kedaluwarsa/dihapus manual)', false); return; }
+    }
+    if (o.status === 'QUEUED' && Date.now() - o.t > 180000) { drop('tidak ada konfirmasi EA >3 menit; order dianggap tidak terkirim', false); return; }
+    if (o.status === 'CANCEL_QUEUED') { if (Date.now() - (o.cancelAt || 0) > 180000) { o.status = 'PENDING_MT5'; o.cancelId = null; ev(st, 'ANA', sym, '[REAL] tidak ada konfirmasi pembatalan dari EA; akan dicoba lagi'); } else return; }
+  }
+  if (o.status === 'TERISI') return;
+  if (a.revise === false) return;
+  // alasan pembatalan: arah/level plan H1 berubah, atau status plan tidak lagi layak
+  const ref = o.ref || {}, why = [];
+  if (g.dir !== o.side) why.push(`arah berubah ${o.side}→${g.dir}`);
+  if (g.entry !== ref.entry || g.sl !== ref.sl || g.tp1 !== ref.tp1) why.push(`level plan H1 berubah (entry ${ref.entry}→${g.entry}, SL ${ref.sl}→${g.sl}, TP ${ref.tp1}→${g.tp1})`);
+  if (['BATAL', 'TERLEWAT', 'PASAR SEPI'].includes(g.status)) why.push('status plan ' + g.status);
+  if (o.mode === 'plan' && !why.length && !planReady(g, { ...a }, cfg) && !['DI ZONA', 'SIAP ENTRY'].includes(g.status)) why.push('plan H1 tidak lagi memenuhi syarat (' + g.status + ')');
+  if (!why.length) return;
+  const txt = why.join('; ');
+  if (o.dry) { drop(`[DRY] order virtual ${o.side} @${o.entry} dibatalkan: ${txt} → plan baru akan dihitung ulang`, true); return; }
+  const r = await sendCancel(mt5, o, txt);
+  if (r.ok) { o.status = 'CANCEL_QUEUED'; o.cancelId = r.id; o.cancelAt = Date.now(); ev(st, 'ANA', sym, `[REAL] plan berubah → perintah batal ${o.side} @${o.entry} dikirim ke MT5: ${txt}`); }
+  else if (o.lastWhy !== r.msg) { o.lastWhy = r.msg; ev(st, 'ANA', sym, `[REAL] plan berubah (${txt}) tapi pembatalan tertunda: ${r.msg}`); }
+}
+// Pembatalan manual dari dashboard (satu simbol) atau semua (kill switch).
+async function cancelReal(store, mt5, sym, why = 'dibatalkan manual') {
+  const cfg = await getCfg(store), st = await getState(store, cfg), out = [];
+  const list = sym === '*' ? Object.keys(st.real || {}) : [sym];
+  for (const k of list) {
+    const o = (st.real || {})[k]; if (!o) { out.push(`${k}: tidak ada order tercatat`); continue; }
+    if (o.status === 'TERISI') { out.push(`${k}: sudah terisi menjadi posisi (tidak dibatalkan; kelola di MT5)`); continue; }
+    if (o.dry) { delete st.real[k]; ev(st, 'ANA', k, `[REAL][DRY] order virtual dibatalkan (${why})`); out.push(`${k}: order virtual dihapus`); continue; }
+    const r = await sendCancel(mt5, o, why);
+    if (r.ok) { o.status = 'CANCEL_QUEUED'; o.cancelId = r.id; o.cancelAt = Date.now(); ev(st, 'ANA', k, `[REAL] perintah batal dikirim (${why})`); out.push(`${k}: perintah batal dikirim`); }
+    else out.push(`${k}: ${r.msg}`);
+  }
+  await store.setJSON('state', st);
+  return out;
 }
 async function runOnce(store, manual, mt5) {
   core.setStore(store);
@@ -199,7 +272,7 @@ async function runOnce(store, manual, mt5) {
     try {
       const src = await core.pickSource(sym, [cfg.ltf, cfg.htf]), v = (await core.candles(sym, cfg.ltf, 100, 50000, src)).slice(0, -1), vh = await htfData(store, sym, cfg.htf, src);
       if (prev.src && prev.src !== src) ev(st, 'SCN', sym, 'sumber data beralih ke ' + (src === 'exness' ? 'Exness' : 'Twelve Data'));
-      const g = core.god(vh, v, cfg.rr, { h: cfg.htf, l: cfg.ltf }), price = v[v.length - 1].c, lastT = v[v.length - 1].t;
+      const g = core.god(vh, v, cfg.rr, { h: cfg.htf, l: cfg.ltf, m15Min: cfg.m15Min }), price = v[v.length - 1].c, lastT = v[v.length - 1].t;
       // PLAN H1 (paper): pending LIMIT mengikuti plan dashboard. Terisi saat harga menyentuh entry, lalu dipantau SL/TP seperti posisi biasa.
       st.pending = st.pending || [];
       for (const q of st.pending.filter(x => x.s === sym)) {
@@ -263,11 +336,12 @@ async function runOnce(store, manual, mt5) {
       const kurang = Object.entries(g.m.chk).filter(([, x]) => !x).map(([k]) => NM[k]).join(', ') || '-';
       const lv = mk >= 7 && !(prev.mOk >= 7) ? 7 : mk >= 6 && !(prev.mOk >= 6) ? 6 : 0;
       if (lv) await mail(st, cfg, 'Mn', `${lv === 7 ? '🔥' : '📈'} ${sym} ${g.dir}: entry ${g.ltf} ${mk}/7 syarat`, [['Simbol', sym], ['Arah', g.dir], ['Syarat entry', mk + '/7'], ['Belum terpenuhi', kurang], ['Acuan ' + g.htf, g.h.ok + '/8 (layak ' + (g.h.layak ? 'ya' : 'belum') + ')'], ['Status', g.status], ['Entry limit', g.entry], ['SL', g.sl], ['TP1', g.tp1], ['R:R', '1:' + g.rr]]);
+      if (mt5) await realAnalyst(mt5, st, cfg, g, sym, price);
       const aCls = { ...AUTO, ...(cfg.auto || {}) }, planAuto = aCls.mode === 'plan';
       // Mode plan (real): pasang LIMIT di zona plan H1 selagi harga belum masuk zona (tidak menunggu konfirmasi M15).
       if (mt5 && planAuto && planReady(g, aCls, cfg))
         await autoReport(st, cfg, await autoQueue(mt5, cfg, g, sym, price, st), g, sym);
-      const eligible = nearReady(g, aCls, cfg), siap = eligible && !prev.elig;
+      const eligible = nearReady(g, aCls, cfg), siap = eligible && (!prev.elig || !!(st.retrig || {})[sym]); if (st.retrig) delete st.retrig[sym];
       if (siap) {
         ev(st, 'ANA', sym, `syarat inti ${g.ltf} terpenuhi (${g.m.ok}/7), ${g.htf} ${g.h.ok}/8, grade ${g.grade}`);
         await mail(st, cfg, 'M', `🎯 ${sym} ${g.dir}: entry ${g.ltf} siap (${g.m.ok}/7, grade ${g.grade})`, [['Simbol', sym], ['Arah', g.dir], ['Syarat entry', g.m.ok + '/7 (inti terpenuhi)'], ['Entry presisi', g.m.entry], ['SL', g.m.sl], ['TP1', g.m.tp != null ? g.m.tp : g.tp1], ['R:R', '1:' + g.m.rr], ['Risiko → potensi TP1', idr(st.balance * cfg.riskPct / 100) + ' → ' + idr(st.balance * cfg.riskPct / 100 * g.m.rr)]]);
@@ -299,4 +373,4 @@ async function runOnce(store, manual, mt5) {
   await store.setJSON('state', st);
   return { ok: true };
 }
-module.exports = { judge, brainAuto, autoQueue, classPass, nearReady, planReady, runOnce, getCfg, getState, applyModal, fresh, testMail, DEF };
+module.exports = { cancelReal, realAnalyst, judge, brainAuto, autoQueue, classPass, nearReady, planReady, runOnce, getCfg, getState, applyModal, fresh, testMail, DEF };

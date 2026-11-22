@@ -4,7 +4,7 @@
 //| Orders are NEVER sent unless EnableExecution=true.                |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.30"
+#property version "1.40"
 #property description "AI Exness Bot - controlled execution bridge; demo-only by default"
 
 #include <Trade/Trade.mqh>
@@ -115,6 +115,29 @@ void Ack(const string id,const string status,const string ticket,const string me
    string out; Http("POST",ServerBaseUrl+"/mt5-command",body,out);
 }
 
+// Pembatalan pending order milik EA (hanya ORDER pending, tidak pernah menyentuh posisi yang sudah terisi). ticket=0 -> semua pending EA untuk simbol itu.
+void ProcessCancel(const string id,const string symbol,const ulong ticket)
+{
+   if(!EnableExecution){ Ack(id,"BLOCKED","","EA EnableExecution=false"); return; }
+   long mode=AccountInfoInteger(ACCOUNT_TRADE_MODE);
+   if(!AllowLiveAccount && mode!=ACCOUNT_TRADE_MODE_DEMO){ Ack(id,"BLOCKED","","Akun bukan DEMO; AllowLiveAccount=false"); return; }
+   if(!DryRun && (!TerminalInfoInteger(TERMINAL_CONNECTED) || !MQLInfoInteger(MQL_TRADE_ALLOWED) || !TerminalInfoInteger(TERMINAL_TRADE_ALLOWED))){ Ack(id,"BLOCKED","","Terminal/koneksi/Algo Trading tidak mengizinkan trading"); return; }
+   int found=0,done=0;
+   trade.SetExpertMagicNumber(MagicNumber);
+   for(int j=OrdersTotal()-1;j>=0;j--)
+   {
+      ulong t=OrderGetTicket(j); if(t==0) continue;
+      if(OrderGetInteger(ORDER_MAGIC)!=MagicNumber || OrderGetString(ORDER_SYMBOL)!=symbol) continue;
+      if(ticket>0 && t!=ticket) continue;
+      found++;
+      if(DryRun) continue;
+      if(trade.OrderDelete(t)) done++;
+   }
+   if(DryRun){ Ack(id,"DRYRUN","","Pembatalan tervalidasi: "+IntegerToString(found)+" pending order akan dihapus (DryRun=true, tidak dihapus)"); return; }
+   if(found==0){ Ack(id,"CANCELLED","","Tidak ada pending order (sudah terisi atau kedaluwarsa)"); return; }
+   Ack(id,(done==found?"CANCELLED":"FAILED"),"",IntegerToString(done)+"/"+IntegerToString(found)+" pending order dihapus");
+}
+
 void ProcessCommand(const string line)
 {
    string p[]; int n=StringSplit(line,'|',p);
@@ -122,6 +145,7 @@ void ProcessCommand(const string line)
    bool planMode=(n>=8 && Trim(p[7])=="P");
    string id=Trim(p[0]), symbol=Trim(p[1]), side=Trim(p[2]);
    double entry=StringToDouble(p[3]), sl=StringToDouble(p[4]), tp=StringToDouble(p[5]), riskPct=StringToDouble(p[6]);
+   if(id!="" && symbol!="" && side=="CANCEL"){ ProcessCancel(id,symbol,(ulong)StringToInteger(p[3])); return; }
    if(id=="" || symbol=="" || (side!="BUY" && side!="SELL")){ Print("Command invalid: ",line); return; }
    if(!EnableExecution){ Ack(id,"BLOCKED","","EA EnableExecution=false"); return; }
    long mode=AccountInfoInteger(ACCOUNT_TRADE_MODE);
@@ -195,6 +219,31 @@ string BuildSpecs()
    return "["+out+"]";
 }
 
+string BuildOrders()
+{
+   string out="";
+   for(int j=0;j<OrdersTotal();j++)
+   {
+      ulong t=OrderGetTicket(j); if(t==0 || OrderGetInteger(ORDER_MAGIC)!=MagicNumber) continue;
+      long ty=OrderGetInteger(ORDER_TYPE); string sd=(ty==ORDER_TYPE_BUY_LIMIT||ty==ORDER_TYPE_BUY_STOP||ty==ORDER_TYPE_BUY)?"BUY":"SELL";
+      if(out!="") out+=",";
+      out+="{\"s\":\""+OrderGetString(ORDER_SYMBOL)+"\",\"tk\":\""+(string)t+"\",\"side\":\""+sd+"\",\"px\":"+DoubleToString(OrderGetDouble(ORDER_PRICE_OPEN),8)+",\"sl\":"+DoubleToString(OrderGetDouble(ORDER_SL),8)+",\"tp\":"+DoubleToString(OrderGetDouble(ORDER_TP),8)+"}";
+   }
+   return "["+out+"]";
+}
+string BuildPositions()
+{
+   string out="";
+   for(int i=0;i<PositionsTotal();i++)
+   {
+      ulong t=PositionGetTicket(i); if(t==0 || PositionGetInteger(POSITION_MAGIC)!=MagicNumber) continue;
+      string sd=(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY)?"BUY":"SELL";
+      if(out!="") out+=",";
+      out+="{\"s\":\""+PositionGetString(POSITION_SYMBOL)+"\",\"tk\":\""+(string)t+"\",\"side\":\""+sd+"\",\"px\":"+DoubleToString(PositionGetDouble(POSITION_PRICE_OPEN),8)+",\"sl\":"+DoubleToString(PositionGetDouble(POSITION_SL),8)+",\"tp\":"+DoubleToString(PositionGetDouble(POSITION_TP),8)+",\"pr\":"+DoubleToString(PositionGetDouble(POSITION_PROFIT),2)+"}";
+   }
+   return "["+out+"]";
+}
+
 void SendReport()
 {
    if(!ReportAccount || GetTickCount64()-g_last_report<15000) return;
@@ -202,7 +251,7 @@ void SendReport()
    string mode="UNKNOWN"; long m=AccountInfoInteger(ACCOUNT_TRADE_MODE);
    if(m==ACCOUNT_TRADE_MODE_DEMO) mode="DEMO"; else if(m==ACCOUNT_TRADE_MODE_CONTEST) mode="CONTEST"; else if(m==ACCOUNT_TRADE_MODE_REAL) mode="REAL";
    string account=(string)AccountInfoInteger(ACCOUNT_LOGIN), server=AccountInfoString(ACCOUNT_SERVER), currency=AccountInfoString(ACCOUNT_CURRENCY);
-   string body="{\"action\":\"report\",\"account\":\""+account+"\",\"server\":\""+server+"\",\"currency\":\""+currency+"\",\"balance\":"+DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE),2)+",\"equity\":"+DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY),2)+",\"margin\":"+DoubleToString(AccountInfoDouble(ACCOUNT_MARGIN),2)+",\"tradeMode\":\""+mode+"\",\"connected\":"+(TerminalInfoInteger(TERMINAL_CONNECTED)?"true":"false")+",\"active\":"+(string)TotalActive()+",\"positions\":[],\"specs\":"+BuildSpecs()+"}";
+   string body="{\"action\":\"report\",\"account\":\""+account+"\",\"server\":\""+server+"\",\"currency\":\""+currency+"\",\"balance\":"+DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE),2)+",\"equity\":"+DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY),2)+",\"margin\":"+DoubleToString(AccountInfoDouble(ACCOUNT_MARGIN),2)+",\"tradeMode\":\""+mode+"\",\"connected\":"+(TerminalInfoInteger(TERMINAL_CONNECTED)?"true":"false")+",\"active\":"+(string)TotalActive()+",\"positions\":"+BuildPositions()+",\"orders\":"+BuildOrders()+",\"specs\":"+BuildSpecs()+"}";
    string out; Http("POST",ServerBaseUrl+"/mt5-command",body,out);
 }
 

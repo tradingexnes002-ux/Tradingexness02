@@ -9,11 +9,13 @@ export default async req => {
     const c=await store.get('command_current',{type:'json'}).catch(()=>null);
     if(!c || c.status!=='PENDING' || Date.now()>c.expiresAt) return text('NONE');
     const kl=await store.get('auto_kill',{type:'json'}).catch(()=>null);
-    if(kl && kl.on){ c.status='BLOCKED'; c.message='Kill switch aktif'; await store.setJSON('command_current',c); return text('NONE'); }
+    const isCancel=c.side==='CANCEL'; // pembatalan selalu boleh walau kill switch aktif (hanya mengurangi risiko)
+    if(kl && kl.on && !isCancel){ c.status='BLOCKED'; c.message='Kill switch aktif'; await store.setJSON('command_current',c); return text('NONE'); }
     const account=await store.get('account_report',{type:'json'}).catch(()=>null);
     if(!account || Date.now()-account.receivedAt>60000 || account.connected!==true) { c.status='BLOCKED'; c.message='MT5 tidak terhubung atau laporan akun tidak segar'; await store.setJSON('command_current',c); return text('NONE'); }
-    if(account.tradeMode!=='DEMO' && process.env.MT5_ALLOW_LIVE!=='true') { c.status='BLOCKED'; c.message='Akun bukan DEMO; server live gate tertutup'; await store.setJSON('command_current',c); return text('NONE'); }
+    if(!isCancel && account.tradeMode!=='DEMO' && process.env.MT5_ALLOW_LIVE!=='true') { c.status='BLOCKED'; c.message='Akun bukan DEMO; server live gate tertutup'; await store.setJSON('command_current',c); return text('NONE'); }
     // Pipe-delimited protocol keeps the MQL5 bridge dependency-free.
+    if(isCancel) return text([c.id,c.symbol,'CANCEL',c.ticket||0,0,0,0,'C'].join('|'));
     return text([c.id,c.symbol,c.side,c.entry,c.sl,c.tp,c.riskPct,c.mode==='plan'?'P':'N'].join('|'));
   }
   if(req.method==='POST') {
@@ -28,7 +30,7 @@ export default async req => {
         return json({ok:true});
       }
       if(b.action==='report') {
-        const report={receivedAt:Date.now(),account:String(b.account||'').slice(0,80),server:String(b.server||'').slice(0,80),currency:String(b.currency||'').slice(0,12),balance:Number(b.balance)||0,equity:Number(b.equity)||0,margin:Number(b.margin)||0,tradeMode:String(b.tradeMode||'UNKNOWN'),connected:!!b.connected,active:Math.max(0,Math.round(Number(b.active)||0)),positions:Array.isArray(b.positions)?b.positions.slice(0,30):[],specs:Array.isArray(b.specs)?b.specs.slice(0,12).map(x=>({s:String((x&&x.s)||'').slice(0,24),vmin:+x.vmin||0,vstep:+x.vstep||0,pu:+x.pu||0,spr:+x.spr||0,cap:+x.cap||0})).filter(x=>x.s&&x.vmin>0&&x.pu>0):[]};
+        const report={receivedAt:Date.now(),account:String(b.account||'').slice(0,80),server:String(b.server||'').slice(0,80),currency:String(b.currency||'').slice(0,12),balance:Number(b.balance)||0,equity:Number(b.equity)||0,margin:Number(b.margin)||0,tradeMode:String(b.tradeMode||'UNKNOWN'),connected:!!b.connected,active:Math.max(0,Math.round(Number(b.active)||0)),positions:Array.isArray(b.positions)?b.positions.slice(0,30):[],orders:Array.isArray(b.orders)?b.orders.slice(0,30):[],specs:Array.isArray(b.specs)?b.specs.slice(0,12).map(x=>({s:String((x&&x.s)||'').slice(0,24),vmin:+x.vmin||0,vstep:+x.vstep||0,pu:+x.pu||0,spr:+x.spr||0,cap:+x.cap||0})).filter(x=>x.s&&x.vmin>0&&x.pu>0):[]};
         await store.setJSON('account_report',report);
         const dd=new Date().toISOString().slice(0,10), ds=await store.get('auto_day',{type:'json'}).catch(()=>null);
         if(!ds || ds.d!==dd) await store.setJSON('auto_day',{d:dd,equity:report.equity});
