@@ -129,7 +129,7 @@ const aiWhy = e => String((e && e.message) || e || 'tidak diketahui').slice(0, 1
 const aiJson = t => { const i = t.indexOf('{'), k = t.lastIndexOf('}'); if (i < 0 || k < i) throw new Error('balasan bukan JSON'); return JSON.parse(t.slice(i, k + 1)); };
 async function brain(sym, g) {
   if (!process.env.ANTHROPIC_KEY && !process.env.GEMINI_KEY) return { ok: true, note: 'tanpa AI, ikut aturan' };
-  const prompt = `Anda manajer risiko. Putuskan apakah posisi PAPER ini layak dibuka. ${sym} ${g.dir}. Acuan ${g.htf}: ${g.h.ok}/8 (layak ${g.h.layak}), entry ${g.ltf}: ${g.m.ok}/7 (inti ${g.m.core}). Entry ${g.m.entry} SL ${g.m.sl} TP1 ${g.m.tp != null ? g.m.tp : g.tp1} R:R 1:${g.m.rr}. Supply ${g.supply || '-'} demand ${g.demand || '-'}. Tren ${g.htf} ${g.trend}. Tolak jika R:R jelek, SL rawan tersapu, atau setup meragukan. Balas HANYA JSON {"buka":true,"alasan":"satu kalimat Indonesia"}.`;
+  const prompt = `Anda manajer risiko. Putuskan apakah posisi PAPER ini layak dibuka. ${sym} ${g.dir}. Acuan ${g.htf}: ${g.h.ok}/8 (layak ${g.h.layak}), entry ${g.ltf}: ${g.m.ok}/7 (inti ${g.m.core}${g.m15Min ? '; ATURAN PEMILIK: entry M15 sah bila syarat M15 >= ' + g.m15Min + '/7, jadi nilai inti false atau zona H1 tidak tersentuh BUKAN alasan menolak' : ''}). Entry ${g.m.entry} SL ${g.m.sl} TP1 ${g.m.tp != null ? g.m.tp : g.tp1} R:R 1:${g.m.rr}. Supply ${g.supply || '-'} demand ${g.demand || '-'}. Tren ${g.htf} ${g.trend}. Tolak jika R:R jelek, SL rawan tersapu, atau setup meragukan. Balas HANYA JSON {"buka":true,"alasan":"satu kalimat Indonesia"}.`;
   try {
     const j = aiJson(await llm(prompt));
     return { ok: !!j.buka, note: String(j.alasan || '').slice(0, 140) };
@@ -158,7 +158,7 @@ const AUTO = { riskMode: 'pct', maxSlCostPct: 50, enabled: false, dryRun: true, 
 async function brainAuto(sym, g, cmd, lossPct, real) {
   if (!process.env.ANTHROPIC_KEY && !process.env.GEMINI_KEY) return { ok: true, failed: true, note: 'kunci AI belum diisi, ikut aturan' };
   const rr = (Math.abs(cmd.tp - cmd.entry) / (Math.abs(cmd.entry - cmd.sl) || 1)).toFixed(2);
-  const prompt = `Anda manajer risiko untuk akun ${real ? 'REAL' : 'demo'} berukuran kecil. Putuskan apakah order ${cmd.mode === 'market' ? 'MARKET (langsung masuk)' : 'LIMIT'} otomatis ini boleh dikirim. Utamakan menjaga modal: tolak jika ragu. ${sym} ${cmd.side} ${cmd.mode === 'market' ? 'MARKET' : 'LIMIT'} entry ${cmd.entry} SL ${cmd.sl} TP ${cmd.tp}, R:R 1:${rr}, ${cmd.slMode ? `MODE BIAYA-SL (dipilih sadar oleh pemilik akun): lot minimum, kerugian jika SL kena ${cmd.riskPct}% ekuitas. Jangan menolak hanya karena besarnya biaya SL; nilai kualitas setup saja` : 'risiko ' + cmd.riskPct + '% ekuitas'}. Skor ${g.skor}/100, acuan ${g.htf} ${g.h.ok}/8 (layak ${g.h.layak}), entry ${g.ltf} ${g.m.ok}/7 (inti ${g.m.core}), tren ${g.htf} ${g.trend}, supply ${g.supply || '-'}, demand ${g.demand || '-'}. Rugi hari ini ${lossPct.toFixed(1)}%. Tolak jika SL rawan tersapu, target terhalang zona lawan yang dekat, atau setup melawan tren. Balas HANYA JSON {"buka":true,"alasan":"satu kalimat Indonesia"}.`;
+  const prompt = `Anda manajer risiko untuk akun ${real ? 'REAL' : 'demo'} berukuran kecil. Putuskan apakah order ${cmd.mode === 'market' ? 'MARKET (langsung masuk)' : 'LIMIT'} otomatis ini boleh dikirim. Utamakan menjaga modal: tolak jika ragu. ${sym} ${cmd.side} ${cmd.mode === 'market' ? 'MARKET' : 'LIMIT'} entry ${cmd.entry} SL ${cmd.sl} TP ${cmd.tp}, R:R 1:${rr}, ${cmd.slMode ? `MODE BIAYA-SL (dipilih sadar oleh pemilik akun): lot minimum, kerugian jika SL kena ${cmd.riskPct}% ekuitas. Jangan menolak hanya karena besarnya biaya SL; nilai kualitas setup saja` : 'risiko ' + cmd.riskPct + '% ekuitas'}. Skor ${g.skor}/100, acuan ${g.htf} ${g.h.ok}/8 (layak ${g.h.layak}), entry ${g.ltf} ${g.m.ok}/7 (inti ${g.m.core}${g.m15Min ? '; ATURAN PEMILIK: entry M15 sah bila syarat M15 >= ' + g.m15Min + '/7, jadi nilai inti false atau zona H1 tidak tersentuh BUKAN alasan menolak' : ''}), tren ${g.htf} ${g.trend}, supply ${g.supply || '-'}, demand ${g.demand || '-'}. Rugi hari ini ${lossPct.toFixed(1)}%. Tolak jika SL rawan tersapu, target terhalang zona lawan yang dekat, atau setup melawan tren. Balas HANYA JSON {"buka":true,"alasan":"satu kalimat Indonesia"}.`;
   try {
     const j = aiJson(await llm(prompt));
     return { ok: j.buka === true, note: String(j.alasan || '').slice(0, 140) };
@@ -218,8 +218,8 @@ async function autoQueue(mt5, cfg, g, sym, price, st) {
     if (!j.open) return { msg: `Judge menutup gerbang live (${j.n}/${j.N} trade teruji): ${j.props.filter(p => !p.pass).map(p => p.label).join('; ')} | ${info}`, judge: j };
   }
   let bn = null;
-  if (a.brain !== false) {
-    bn = await brainAuto(sym, g, cmd, lossPct, real);
+  if (a.brain !== false && !cfg.m15Go) { // mode M15 siap -> langsung masuk: ambang N/7 adalah aturan pemilik, Brain tidak ikut memveto
+    bn = await brainAuto(sym, { ...g, m15Min: cfg.m15Min }, cmd, lossPct, real);
     if (!bn.ok) { if (!bn.failed) await markPlan(); return { msg: `Brain MENAHAN order (${bn.failed ? 'AI tidak tersedia atau gagal, ditahan demi keamanan' : 'menolak'}): ${bn.note} | ${info}`, brain: bn }; }
   }
   const track = (id, d) => { if (st) (st.real = st.real || {})[sym] = { id, dry: d, status: d ? 'VIRTUAL' : 'QUEUED', side: g.dir, symbol, entry, sl, tp, riskPct: riskSend, mode: goMkt ? 'market' : a.mode, h1time: g.h1time, ref: { dir: g.dir, entry: g.entry, sl: g.sl, tp1: g.tp1 }, t: Date.now() }; };
@@ -442,7 +442,7 @@ async function runOnce(store, manual, mt5) {
         else if (slBad) { const m = `[${kind}] sinyal ${g.m.ok}/7 dilewati: ${slBad}`; if (!cfg.m15Go || goOnce(pKey, m)) ev(st, 'ANA', sym, m); }
         else if (st.positions.some(x => x.s === sym && x.kind === kind) || st.positions.length >= cfg.maxOpen || st.balance <= 0) { const m = `[${kind}] sinyal ${g.m.ok}/7 dilewati: posisi/slot penuh`; if (!cfg.m15Go || goOnce(pKey, m)) ev(st, 'ANA', sym, m); }
         else {
-          const b = cfg.aiOpen ? await brain(sym, { ...g, m: { ...g.m, sl, tp, rr } }) : { ok: true, note: 'tanpa Brain' };
+          const b = cfg.aiOpen && !cfg.m15Go ? await brain(sym, { ...g, m15Min: cfg.m15Min, m: { ...g.m, sl, tp, rr } }) : { ok: true, note: cfg.m15Go ? 'tanpa Brain (mode M15 siap → langsung masuk)' : 'tanpa Brain' };
           ev(st, 'BRN', sym, (b.ok ? 'setuju: ' : 'menolak: ') + b.note);
           if (cfg.m15Go) st.go[pKey] = planKey;
           if (b.ok) {

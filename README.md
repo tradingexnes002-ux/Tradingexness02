@@ -208,3 +208,8 @@ Di panel "Eksekusi otomatis ke MT5" ada pilihan **Mode order**:
 - Aturan lot dan risiko meniru EA: lot dibulatkan ke bawah sesuai anggaran, lot minimum hanya boleh jika risikonya di bawah plafon, dan trade ditolak bila spread > 15% dari SL.
 - Saldo simulasi dimulai dari ekuitas MT5 saat opsi ini pertama kali diaktifkan (kecuali Anda sudah mengubah kolom Modal awal pada saat yang sama). Modal awal tetap bisa diedit kapan saja.
 - Perbedaan yang tetap ada: paper tidak mensimulasikan spread/slippage saat terisi, dan tidak terkena kill switch, Judge, Brain real, batas rugi harian, atau cek margin.
+
+## Pembaruan v14i
+
+- Mode "M15 siap → langsung masuk" tidak lagi dimintai persetujuan Brain AI (paper dan real). Ambang N/7 M15 adalah aturan pemilik; syarat "inti" atau sentuhan zona H1 tidak dipakai sebagai alasan menolak. Gerbang lain tetap berlaku: kelas syarat, biaya SL dan lot, spread, Judge, dry-run, kill switch, batas rugi harian.
+- Di mode M15 tanpa "langsung masuk", Brain tetap dipakai tetapi diberi tahu aturan N/7 itu.
