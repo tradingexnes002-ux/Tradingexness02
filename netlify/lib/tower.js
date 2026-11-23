@@ -1,10 +1,37 @@
 // Control Tower: pemantauan terjadwal, posisi PAPER (simulasi), riwayat winrate, email. Tidak ada order ke broker.
 const core = require('./core');
-const DEF = { enabled: false, symbols: [], htf: '1h', ltf: '15min', rr: 3, aiOpen: true, emailH: true, emailM: true, emailMn: true, emailPos: true, maxOpen: 6, paperPlan: true, paperCls: 'low', paperMode: 'h1', m15Min: 6, modal: 2000000, riskPct: 1, auto: { enabled: false, dryRun: true, brain: true, judgeGate: true, judgeN: 30, costR: 0.1, riskPct: 0.25, maxDailyLossPct: 3, maxOpen: 1, cooldownMin: 30, kill: false, mode: 'near', cls: 'high', minSkor: 70 } };
+const DEF = { enabled: false, symbols: [], htf: '1h', ltf: '15min', rr: 3, aiOpen: true, emailH: true, emailM: true, emailMn: true, emailPos: true, maxOpen: 6, paperPlan: true, paperCls: 'low', paperMode: 'h1', m15Min: 6, m15Go: false, paperRiskMode: 'pct', paperMaxSlCostPct: 50, paperMirror: false, modal: 2000000, riskPct: 1, auto: { enabled: false, dryRun: true, brain: true, judgeGate: true, judgeN: 30, costR: 0.1, riskPct: 0.25, maxDailyLossPct: 3, maxOpen: 1, cooldownMin: 30, kill: false, mode: 'near', cls: 'high', minSkor: 70 } };
 const idr = n => (n < 0 ? '-' : '') + 'Rp' + String(Math.abs(Math.round(n))).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
-const fresh = () => ({ positions: [], pending: [], used: {}, real: {}, realWhy: {}, retrig: {}, history: [], last: {}, log: [], counts: { SCN: 0, ANA: 0, BRN: 0, EXE: 0, RSK: 0 }, emails: 0, lastRun: null });
+const fresh = () => ({ positions: [], pending: [], used: {}, locks: {}, go: {}, goWhy: {}, real: {}, realWhy: {}, retrig: {}, history: [], last: {}, log: [], counts: { SCN: 0, ANA: 0, BRN: 0, EXE: 0, RSK: 0 }, emails: 0, lastRun: null });
 const ttlOf = iv => ({ '1h': 600000, '2h': 900000, '4h': 1800000, '1day': 3600000 })[iv] || 600000;
 const getCfg = async store => ({ ...DEF, ...((await store.get('config', { type: 'json' }).catch(() => null)) || {}) });
+// Paper mode "biaya SL": sama dengan real. Lot minimum dari spesifikasi EA; biaya SL = jarak SL x nilai per poin x lot min; boleh masuk bila <= plafon % saldo simulasi.
+const slCostOf = (specs, sym, dist, eq, plafPct) => {
+  const symbol = core.exName(sym).replace(/[^A-Za-z0-9._#-]/g, '').slice(0, 24), sp = (specs || []).find(x => x.s === symbol);
+  if (!sp || !(sp.pu > 0) || !(sp.vmin > 0)) return { ok: false, msg: 'biaya SL tidak bisa dihitung: butuh spesifikasi simbol dari EA (EA harus online dan SpecSymbols berisi simbol ini)' };
+  const plaf = Math.min(50, Math.max(1, +plafPct || 50)), cost = dist * sp.pu * sp.vmin, pct = cost / eq * 100, need = cost / (plaf / 100);
+  return pct > plaf ? { ok: false, cost, pct, msg: `biaya SL ${idr(cost)} (${pct.toFixed(0)}% saldo simulasi) melebihi plafon ${plaf}%; kurang ${idr(need - eq)}` } : { ok: true, cost, pct };
+};
+// Paper "samakan dengan real": mode order, kelas syarat, skor, mode risiko, plafon, risiko %, maks posisi diambil dari pengaturan eksekusi real.
+const effCfg = c => {
+  if (!c.paperMirror) return c;
+  const A = { ...AUTO, ...(c.auto || {}) };
+  return { ...c, paperMode: A.mode === 'near' ? 'm15' : A.mode === 'plan' ? 'h1' : 'konfirm', paperCls: A.cls, paperMinSkor: A.minSkor, paperRiskMode: A.riskMode, paperMaxSlCostPct: A.maxSlCostPct, riskPct: A.riskPct, maxOpen: A.maxOpen };
+};
+// Risiko per trade paper. Non-mirror + % : lama (risiko = % saldo). Mode biaya SL atau mirror: aturan lot/biaya/spread yang sama dengan EA.
+const PAPER_MAX_SPREAD_PCT = 15;
+const paperRisk = (cfg, specs, sym, dist, eq) => {
+  if (cfg.paperRiskMode !== 'sl' && !cfg.paperMirror) return { ok: true, cost: Math.round(eq * cfg.riskPct / 100) };
+  const symbol = core.exName(sym).replace(/[^A-Za-z0-9._#-]/g, '').slice(0, 24), sp = (specs || []).find(x => x.s === symbol);
+  if (sp && sp.spr > 0 && dist > 0 && sp.spr / dist * 100 > PAPER_MAX_SPREAD_PCT) return { ok: false, msg: `spread ${(sp.spr / dist * 100).toFixed(0)}% dari SL melebihi batas ${PAPER_MAX_SPREAD_PCT}% (ditolak juga oleh EA real)` };
+  if (cfg.paperRiskMode === 'sl') return slCostOf(specs, sym, dist, eq, cfg.paperMaxSlCostPct);
+  if (!sp || !(sp.pu > 0) || !(sp.vmin > 0)) return { ok: false, msg: 'butuh spesifikasi simbol dari EA (EA harus online dan SpecSymbols berisi simbol ini)' };
+  const perLot = dist * sp.pu, budget = eq * cfg.riskPct / 100, step = sp.vstep > 0 ? sp.vstep : sp.vmin, lot = Math.floor(budget / perLot / step + 1e-9) * step;
+  if (lot >= sp.vmin) return { ok: true, cost: Math.round(lot * perLot), pct: lot * perLot / eq * 100 };
+  const minCost = sp.vmin * perLot, minPct = minCost / eq * 100;
+  if (sp.cap > 0 && minPct <= sp.cap) return { ok: true, cost: Math.round(minCost), pct: minPct };
+  return { ok: false, cost: minCost, pct: minPct, msg: `lot minimum ${sp.vmin} berisiko ${minPct.toFixed(1)}% saldo simulasi (anggaran ${cfg.riskPct}%); butuh saldo sekitar ${idr(minCost / ((sp.cap > 0 ? sp.cap : cfg.riskPct) / 100))}` };
+};
 const getState = async (store, cfg = DEF) => {
   const s = { ...fresh(), ...((await store.get('state', { type: 'json' }).catch(() => null)) || {}) };
   if (typeof s.balance !== 'number') {
@@ -125,13 +152,13 @@ function judge(st, a = {}) {
   ];
   return { n, N, cost, avg: +avg.toFixed(3), pf: +pf.toFixed(2), dd: +dd.toFixed(2), winrate: dn ? Math.round(wins / dn * 100) : null, props, open: props.every(p => p.pass) };
 }
-const AUTO = { enabled: false, dryRun: true, brain: true, riskPct: 0.25, maxDailyLossPct: 3, maxOpen: 1, cooldownMin: 30, kill: false, mode: 'near', cls: 'high', minSkor: 70, revise: true, brainFailOpen: true };
+const AUTO = { riskMode: 'pct', maxSlCostPct: 50, enabled: false, dryRun: true, brain: true, riskPct: 0.25, maxDailyLossPct: 3, maxOpen: 1, cooldownMin: 30, kill: false, mode: 'near', cls: 'high', minSkor: 70, revise: true, brainFailOpen: true };
 // Antrean order otomatis ke MT5. Berlapis: gerbang server (env), saklar dashboard, kill switch, batas rugi harian, batas posisi aktif, jeda per simbol, dry-run.
 // Brain untuk eksekusi otomatis: hanya boleh MENAHAN order yang sudah lolos aturan, tidak pernah membuka order sendiri. Gagal = ditahan.
 async function brainAuto(sym, g, cmd, lossPct, real) {
   if (!process.env.ANTHROPIC_KEY && !process.env.GEMINI_KEY) return { ok: true, failed: true, note: 'kunci AI belum diisi, ikut aturan' };
   const rr = (Math.abs(cmd.tp - cmd.entry) / (Math.abs(cmd.entry - cmd.sl) || 1)).toFixed(2);
-  const prompt = `Anda manajer risiko untuk akun ${real ? 'REAL' : 'demo'} berukuran kecil. Putuskan apakah order LIMIT otomatis ini boleh dikirim. Utamakan menjaga modal: tolak jika ragu. ${sym} ${cmd.side} LIMIT entry ${cmd.entry} SL ${cmd.sl} TP ${cmd.tp}, R:R 1:${rr}, risiko ${cmd.riskPct}% ekuitas. Skor ${g.skor}/100, acuan ${g.htf} ${g.h.ok}/8 (layak ${g.h.layak}), entry ${g.ltf} ${g.m.ok}/7 (inti ${g.m.core}), tren ${g.htf} ${g.trend}, supply ${g.supply || '-'}, demand ${g.demand || '-'}. Rugi hari ini ${lossPct.toFixed(1)}%. Tolak jika SL rawan tersapu, target terhalang zona lawan yang dekat, atau setup melawan tren. Balas HANYA JSON {"buka":true,"alasan":"satu kalimat Indonesia"}.`;
+  const prompt = `Anda manajer risiko untuk akun ${real ? 'REAL' : 'demo'} berukuran kecil. Putuskan apakah order ${cmd.mode === 'market' ? 'MARKET (langsung masuk)' : 'LIMIT'} otomatis ini boleh dikirim. Utamakan menjaga modal: tolak jika ragu. ${sym} ${cmd.side} ${cmd.mode === 'market' ? 'MARKET' : 'LIMIT'} entry ${cmd.entry} SL ${cmd.sl} TP ${cmd.tp}, R:R 1:${rr}, ${cmd.slMode ? `MODE BIAYA-SL (dipilih sadar oleh pemilik akun): lot minimum, kerugian jika SL kena ${cmd.riskPct}% ekuitas. Jangan menolak hanya karena besarnya biaya SL; nilai kualitas setup saja` : 'risiko ' + cmd.riskPct + '% ekuitas'}. Skor ${g.skor}/100, acuan ${g.htf} ${g.h.ok}/8 (layak ${g.h.layak}), entry ${g.ltf} ${g.m.ok}/7 (inti ${g.m.core}), tren ${g.htf} ${g.trend}, supply ${g.supply || '-'}, demand ${g.demand || '-'}. Rugi hari ini ${lossPct.toFixed(1)}%. Tolak jika SL rawan tersapu, target terhalang zona lawan yang dekat, atau setup melawan tren. Balas HANYA JSON {"buka":true,"alasan":"satu kalimat Indonesia"}.`;
   try {
     const j = aiJson(await llm(prompt));
     return { ok: j.buka === true, note: String(j.alasan || '').slice(0, 140) };
@@ -160,15 +187,25 @@ async function autoQueue(mt5, cfg, g, sym, price, st) {
   const cur = await mt5.get('command_current', { type: 'json' }).catch(() => null);
   if (cur && cur.status === 'PENDING' && Date.now() - cur.createdAt < 120000) return { msg: 'dilewati: masih ada perintah yang belum diakui EA' };
   const lk = 'auto_last_' + sym.replace(/\W/g, ''), last = await mt5.get(lk, { type: 'json' }).catch(() => null);
-  const planMode = a.mode === 'plan', konf = a.mode === 'konfirm';
+  const goMkt = !!cfg.m15Go, planMode = a.mode === 'plan' && !goMkt, konf = a.mode === 'konfirm' && !goMkt; // m15Go: M15 siap -> order MARKET langsung
   const d = price > 100 ? 2 : 5, buy = g.dir === 'BUY', at = +g.m.atr || 0;
-  const entry = planMode ? +g.entry : +(buy ? price - 0.1 * at : price + 0.1 * at).toFixed(d), sl = (planMode || konf) ? +g.sl : +g.m.sl, tp = (planMode || konf) ? +g.tp1 : +(g.m.tp != null ? g.m.tp : g.tp1);
+  const entry = goMkt ? +(+price).toFixed(d) : planMode ? +g.entry : +(buy ? price - 0.1 * at : price + 0.1 * at).toFixed(d), sl = (planMode || konf) ? +g.sl : +g.m.sl, tp = (planMode || konf) ? +g.tp1 : +(g.m.tp != null ? g.m.tp : g.tp1);
   if (![entry, sl, tp].every(Number.isFinite) || !(buy ? sl < entry && entry < tp : tp < entry && entry < sl)) return { msg: 'dilewati: urutan entry, SL, dan TP tidak valid' };
   if (konf && Math.abs(tp - entry) / (Math.abs(entry - sl) || 1e-9) < cfg.rr) return { msg: 'dilewati: R:R plan H1 dari harga sekarang di bawah minimum' };
   if (planMode && (buy ? !(entry < price) : !(entry > price))) return { msg: 'dilewati: harga sudah melewati entry plan H1, LIMIT tidak valid' };
   const symbol = core.exName(sym).replace(/[^A-Za-z0-9._#-]/g, '').slice(0, 24), riskPct = Math.min(10, Math.max(0.05, +a.riskPct || 0.25));
-  const cmd = { symbol, side: g.dir, entry, sl, tp, riskPct, mode: planMode ? 'plan' : 'near' };
-  const info = `${planMode ? '[PLAN H1] ' : konf ? '[M15 konfirm → SL/TP H1] ' : ''}${g.dir} LIMIT ${symbol} @${entry} SL ${sl} TP ${tp} risiko ${riskPct}% (${real ? 'AKUN REAL' : 'demo'})`;
+  // MODE BIAYA-SL: lot minimum broker; order boleh masuk selama kerugian jika SL kena (lot min x jarak SL) tidak melebihi plafon % ekuitas. Tanpa pembulatan risiko ke anggaran %.
+  let slInfo = null, riskSend = riskPct;
+  const mny = n => String(Math.abs(Math.round(n))).replace(/\B(?=(\d{3})+(?!\d))/g, '.') + ' ' + (acc.currency || '');
+  if (a.riskMode === 'sl') {
+    const sp = (acc.specs || []).find(x => x.s === symbol), dist = Math.abs(entry - sl), eq = +acc.equity || 0, plaf = Math.min(50, Math.max(1, +a.maxSlCostPct || 50));
+    if (!sp || !(sp.pu > 0) || !(sp.vmin > 0) || eq <= 0) return { msg: 'dilewati: mode biaya-SL butuh spesifikasi simbol dari EA (cek SpecSymbols di EA)' };
+    const cost = dist * sp.pu * sp.vmin, pct = cost / eq * 100, need = cost / (plaf / 100);
+    if (pct > plaf) return { msg: `dilewati: biaya SL ${mny(cost)} (${pct.toFixed(0)}% ekuitas) melebihi plafon ${plaf}%; kurang ${mny(need - eq)}, butuh ekuitas ${mny(need)}` };
+    slInfo = { cost, pct: +pct.toFixed(1) }; riskSend = Math.max(0.05, slInfo.pct);
+  }
+  const cmd = { symbol, side: g.dir, entry, sl, tp, riskPct: riskSend, slMode: !!slInfo, mode: goMkt ? 'market' : planMode ? 'plan' : 'near' };
+  const info = `${goMkt ? '[M15 SIAP → MARKET] ' : planMode ? '[PLAN H1] ' : konf ? '[M15 konfirm → SL/TP H1] ' : ''}${g.dir} ${goMkt ? 'MARKET' : 'LIMIT'} ${symbol} @${entry} SL ${sl} TP ${tp} ${slInfo ? 'biaya SL ' + mny(slInfo.cost) + ' (' + slInfo.pct + '% ekuitas, lot min)' : 'risiko ' + riskPct + '%'} (${real ? 'AKUN REAL' : 'demo'})`;
   // Mode plan: satu plan (arah|entry|SL|TP) hanya dievaluasi sekali per status dry-run, agar Brain tidak dipanggil berulang dan order tidak dobel.
   const sig = [g.dir, entry, sl, tp].join('|'), pk = 'auto_plan_' + sym.replace(/\W/g, ''), dry = a.dryRun !== false;
   if (planMode) { const pl = await mt5.get(pk, { type: 'json' }).catch(() => null); if (pl && pl.sig === sig && !!pl.dry === dry) return { silent: true }; }
@@ -185,7 +222,7 @@ async function autoQueue(mt5, cfg, g, sym, price, st) {
     bn = await brainAuto(sym, g, cmd, lossPct, real);
     if (!bn.ok) { if (!bn.failed) await markPlan(); return { msg: `Brain MENAHAN order (${bn.failed ? 'AI tidak tersedia atau gagal, ditahan demi keamanan' : 'menolak'}): ${bn.note} | ${info}`, brain: bn }; }
   }
-  const track = (id, d) => { if (st) (st.real = st.real || {})[sym] = { id, dry: d, status: d ? 'VIRTUAL' : 'QUEUED', side: g.dir, symbol, entry, sl, tp, riskPct, mode: a.mode, h1time: g.h1time, ref: { dir: g.dir, entry: g.entry, sl: g.sl, tp1: g.tp1 }, t: Date.now() }; };
+  const track = (id, d) => { if (st) (st.real = st.real || {})[sym] = { id, dry: d, status: d ? 'VIRTUAL' : 'QUEUED', side: g.dir, symbol, entry, sl, tp, riskPct: riskSend, mode: goMkt ? 'market' : a.mode, h1time: g.h1time, ref: { dir: g.dir, entry: g.entry, sl: g.sl, tp1: g.tp1 }, t: Date.now() }; };
   if (bn && bn.failed && !dry && a.brainFailOpen === false) return { msg: `Brain AI tidak tersedia (${bn.note}); order live ditahan demi keamanan, dicoba lagi di scan berikutnya | ${info}`, brain: bn };
   if (dry) { await markPlan(); track('dry-' + Date.now().toString(36), true); return { msg: 'DRY-RUN, tidak dikirim: ' + info, cmd, brain: bn }; }
   const id = require('crypto').randomUUID();
@@ -241,7 +278,7 @@ async function realAnalyst(mt5, st, cfg, g, sym, price) {
       const hasOrd = acc.orders.some(x => o.ticket ? String(x.tk) === String(o.ticket) : (x.s === o.symbol && x.side === o.side)), pos = (acc.positions || []).find(x => x.s === o.symbol);
       if (hasOrd) { o.status = 'PENDING_MT5'; }
       else if (pos) { if (o.status !== 'TERISI') { o.status = 'TERISI'; ev(st, 'EXE', sym, `[REAL] order terisi → posisi berjalan @${pos.px} (P/L ${pos.pr})`); } }
-      else { drop(o.status === 'TERISI' ? 'posisi real selesai (TP/SL/ditutup)' : 'pending order hilang di MT5 (kedaluwarsa/dihapus manual)', false); return; }
+      else { if (o.status === 'TERISI') { if (st.go) delete st.go[sym + '|real']; if (st.locks) delete st.locks[sym]; } drop(o.status === 'TERISI' ? 'posisi real selesai (TP/SL/ditutup)' : 'pending order hilang di MT5 (kedaluwarsa/dihapus manual)', false); return; }
     }
     if (o.status === 'QUEUED' && Date.now() - o.t > 180000) { drop('tidak ada konfirmasi EA >3 menit; order dianggap tidak terkirim', false); return; }
     if (o.status === 'CANCEL_QUEUED') { if (Date.now() - (o.cancelAt || 0) > 180000) { o.status = 'PENDING_MT5'; o.cancelId = null; ev(st, 'ANA', sym, '[REAL] tidak ada konfirmasi pembatalan dari EA; akan dicoba lagi'); } else return; }
@@ -278,7 +315,7 @@ async function cancelReal(store, mt5, sym, why = 'dibatalkan manual') {
 }
 async function runOnce(store, manual, mt5) {
   core.setStore(store);
-  const cfg = await getCfg(store), st = await getState(store, cfg);
+  const cfg = effCfg(await getCfg(store)), st = await getState(store, cfg);
   if (!cfg.enabled && !manual) return { skipped: 'nonaktif' };
   const runSymbols = (Array.isArray(cfg.symbols) ? cfg.symbols : []).filter((it, i, a) => it && it.s && a.findIndex(x => x && String(x.s).toUpperCase().replace(/[^A-Z0-9]/g, '') === String(it.s).toUpperCase().replace(/[^A-Z0-9]/g, '')) === i).slice(0, 6);
   for (const it of runSymbols) {
@@ -289,6 +326,7 @@ async function runOnce(store, manual, mt5) {
       const src = await core.pickSource(sym, [cfg.ltf, cfg.htf]), v = (await core.candles(sym, cfg.ltf, 100, 50000, src)).slice(0, -1), vh = await htfData(store, sym, cfg.htf, src);
       if (prev.src && prev.src !== src) ev(st, 'SCN', sym, 'sumber data beralih ke ' + (src === 'exness' ? 'Exness' : 'Twelve Data'));
       const g = core.god(vh, v, cfg.rr, { h: cfg.htf, l: cfg.ltf, m15Min: cfg.m15Min }), price = v[v.length - 1].c, lastT = v[v.length - 1].t;
+      const pNeed = cfg.paperRiskMode === 'sl' || !!cfg.paperMirror, pSpecs = pNeed && mt5 ? ((await mt5.get('account_report', { type: 'json' }).catch(() => null)) || {}).specs : null;
       // PLAN H1 (paper): pending LIMIT mengikuti plan dashboard. Terisi saat harga menyentuh entry, lalu dipantau SL/TP seperti posisi biasa.
       st.pending = st.pending || [];
       for (const q of st.pending.filter(x => x.s === sym)) {
@@ -301,8 +339,10 @@ async function runOnce(store, manual, mt5) {
         }
         if (!fillT && !why && q.bars >= (q.kind === 'M15' ? 64 : 192)) why = q.kind === 'M15' ? 'kedaluwarsa (16 jam)' : 'kedaluwarsa (48 jam)';
         if (fillT && (st.balance <= 0 || st.positions.length >= cfg.maxOpen)) { why = 'slot posisi penuh'; fillT = null; }
+        let pRisk = Math.round(st.balance * cfg.riskPct / 100);
+        if (fillT && pNeed) { const c = paperRisk(cfg, pSpecs, sym, Math.abs(q.entry - q.sl), st.balance); if (!c.ok) { why = c.msg; fillT = null; } else pRisk = Math.round(c.cost); }
         if (fillT) {
-          const pos = { id: q.id, kind: q.kind || 'H1', s: sym, a: asset, dir: q.dir, entry: q.entry, sl: q.sl, tp1: q.tp1, tp2: q.tp2, rr: q.rr, tOpen: Date.now(), lastT: prevT, bars: 0, riskRp: Math.round(st.balance * cfg.riskPct / 100), grade: q.grade, hOk: q.hOk, mOk: 0, why: 'plan ' + (q.kind || 'H1') + ' terisi', src: 'plan' };
+          const pos = { id: q.id, kind: q.kind || 'H1', s: sym, a: asset, dir: q.dir, entry: q.entry, sl: q.sl, tp1: q.tp1, tp2: q.tp2, rr: q.rr, tOpen: Date.now(), lastT: prevT, bars: 0, riskRp: pRisk, grade: q.grade, hOk: q.hOk, mOk: 0, why: 'plan ' + (q.kind || 'H1') + ' terisi', src: 'plan' };
           st.positions.push(pos); st.pending = st.pending.filter(x => x !== q); (st.used = st.used || {})[sym + '|' + q.kind] = q.ukey;
           ev(st, 'EXE', sym, `[${q.kind}] ${q.dir} LIMIT plan terisi @${q.entry} SL ${q.sl} TP ${q.tp1} · risiko ${idr(pos.riskRp)}`);
           await mail(st, cfg, 'Pos', `🚀 Plan ${q.kind} terisi (paper): ${sym} ${q.dir}`, [['Simbol', sym], ['Arah', q.dir], ['Entry', q.entry], ['SL', q.sl], ['TP1', q.tp1], ['R:R', '1:' + q.rr], ['Risiko', idr(pos.riskRp)], ['Potensi TP1', idr(pos.riskRp * q.rr)], ['Saldo', idr(st.balance)]]);
@@ -325,17 +365,38 @@ async function runOnce(store, manual, mt5) {
           const pnl = Math.round(R * (p.riskRp || st.balance * cfg.riskPct / 100)); st.balance += pnl;
           st.history.unshift({ ...p, res, exit: px, R, pnl, tClose: Date.now() }); if (st.history.length > 200) st.history.length = 200;
           st.positions = st.positions.filter(x => x !== p);
+          if (st.go) delete st.go[sym + '|paper']; if (st.locks) delete st.locks[sym]; // posisi selesai: boleh masuk lagi di plan yang sama bila syarat M15 terpenuhi lagi
           ev(st, 'RSK', sym, `posisi ${p.dir} ditutup ${res} @${px} (${R > 0 ? '+' : ''}${R}R · ${idr(pnl)} · saldo ${idr(st.balance)})`);
           await mail(st, cfg, 'Pos', `${res === 'TP' ? '✅' : res === 'SL' ? '❌' : '⏱'} ${sym} ${p.dir} kena ${res} (${R}R)`, [['Simbol', sym], ['Arah', p.dir], ['Entry', p.entry], ['SL', p.sl], ['TP1', p.tp1], ['Keluar', px], ['Hasil', R + 'R (' + idr(pnl) + ')'], ['Saldo', idr(st.balance)]]);
         } else ev(st, 'RSK', sym, `pantau posisi ${p.dir}: harga ${price}, SL ${p.sl}, TP ${p.tp1}`);
       }
-      ev(st, 'SCN', sym, `${g.htf} ${g.h.ok}/8 · ${g.ltf} ${g.m.ok}/7 · ${g.status}`);
+      // KUNCI ENTRY M15: begitu syarat M15 terpenuhi, entry/SL/TP dikunci dan DIBIARKAN TERBUKA sampai ada plan H1 baru, kena SL/TP, atau arah berbalik.
+      // Syarat yang hilang di candle berikutnya tidak mencabut kunci.
+      st.locks = st.locks || {}; st.go = st.go || {}; st.goWhy = st.goWhy || {};
+      const planKey = [g.dir, g.entry, g.sl, g.tp1].join('|');
+      let lk = st.locks[sym];
+      if (lk) {
+        let rel = null;
+        if (lk.planKey !== planKey) rel = 'plan H1 baru';
+        else for (const x of v.filter(c => c.t > lk.lastT)) {
+          if (lk.dir === 'BUY' ? x.l <= lk.sl : x.h >= lk.sl) { rel = 'kena SL'; break; }
+          if (lk.dir === 'BUY' ? x.h >= lk.tp : x.l <= lk.tp) { rel = 'kena TP'; break; }
+        }
+        if (rel) { ev(st, 'ANA', sym, `kunci entry ${lk.dir} @${lk.entry} dilepas: ${rel}`); delete st.locks[sym]; lk = null; } else lk.lastT = lastT;
+      }
+      if (!lk && g.m.entry != null && !['TERLEWAT', 'BATAL', 'PASAR SEPI'].includes(g.status)) {
+        lk = st.locks[sym] = { dir: g.dir, entry: g.m.entry, sl: g.m.sl, tp: g.m.tp != null ? g.m.tp : g.tp1, rr: g.m.rr, mOk: g.m.ok, hOk: g.h.ok, planKey, t: Date.now(), candleT: lastT, lastT };
+        ev(st, 'ANA', sym, `entry ${g.ltf} DIKUNCI: ${g.dir} @${lk.entry} SL ${lk.sl} TP ${lk.tp} (R:R 1:${lk.rr}, ${g.ltf} ${g.m.ok}/7); dibiarkan terbuka sampai ada plan baru`);
+      }
+      const goOnce = (k, m) => { if (st.goWhy[k] !== m) { st.goWhy[k] = m; return true; } return false; };
+      ev(st, 'SCN', sym, `${g.htf} ${g.h.ok}/8 · ${g.ltf} ${g.m.ok}/7 · ${g.status}${lk ? ' · entry terkunci' : ''}`);
+      const pModeEff = cfg.m15Go ? 'm15' : (cfg.paperMode || 'h1');
       if (cfg.paperPlan !== false) {
         const BAD = ['TERLEWAT', 'BATAL', 'PASAR SEPI'], hOkGate = classPass(g, { cls: cfg.paperCls || 'low' }, true) && !BAD.includes(g.status) && g.sl != null && g.tp1 != null;
         const passive = e => e != null && (g.dir === 'BUY' ? e <= price : e >= price);
         // Mode paper 'h1': pending LIMIT di tepi zona H1 mengikuti plan dashboard. Mode 'm15' dan 'konfirm' dieksekusi saat M15 memenuhi syarat (lihat bawah).
         const specs = [
-          { kind: 'H1', valid: (cfg.paperMode || 'h1') === 'h1' && hOkGate && (g.rr || 0) >= cfg.rr, entry: g.entry, sl: g.sl, tp1: g.tp1, tp2: g.tp2, rr: g.rr, ukey: g.dir + '|' + g.entry + '|' + g.sl + '|' + g.tp1, same: c => c.entry === g.entry && c.sl === g.sl && c.tp1 === g.tp1 && c.dir === g.dir }
+          { kind: 'H1', valid: pModeEff === 'h1' && hOkGate && (g.rr || 0) >= cfg.rr, entry: g.entry, sl: g.sl, tp1: g.tp1, tp2: g.tp2, rr: g.rr, ukey: g.dir + '|' + g.entry + '|' + g.sl + '|' + g.tp1, same: c => c.entry === g.entry && c.sl === g.sl && c.tp1 === g.tp1 && c.dir === g.dir }
         ];
         for (const sp of specs) {
           const cur = st.pending.find(x => x.s === sym && x.kind === sp.kind), hasPos = st.positions.some(x => x.s === sym && (x.kind || 'H1') === sp.kind);
@@ -353,32 +414,41 @@ async function runOnce(store, manual, mt5) {
       const lv = mk >= 7 && !(prev.mOk >= 7) ? 7 : mk >= 6 && !(prev.mOk >= 6) ? 6 : 0;
       if (lv) await mail(st, cfg, 'Mn', `${lv === 7 ? '🔥' : '📈'} ${sym} ${g.dir}: entry ${g.ltf} ${mk}/7 syarat`, [['Simbol', sym], ['Arah', g.dir], ['Syarat entry', mk + '/7'], ['Belum terpenuhi', kurang], ['Acuan ' + g.htf, g.h.ok + '/8 (layak ' + (g.h.layak ? 'ya' : 'belum') + ')'], ['Status', g.status], ['Entry limit', g.entry], ['SL', g.sl], ['TP1', g.tp1], ['R:R', '1:' + g.rr]]);
       if (mt5) await realAnalyst(mt5, st, cfg, g, sym, price);
-      const aCls = { ...AUTO, ...(cfg.auto || {}) }, planAuto = aCls.mode === 'plan';
+      const aCls = { ...AUTO, ...(cfg.auto || {}) }, planAuto = aCls.mode === 'plan' && !cfg.m15Go;
       // Mode plan (real): pasang LIMIT di zona plan H1 selagi harga belum masuk zona (tidak menunggu konfirmasi M15).
       if (mt5 && planAuto && planReady(g, aCls, cfg))
         await autoReport(st, cfg, await autoQueue(mt5, cfg, g, sym, price, st), g, sym);
-      const eligible = nearReady(g, aCls, cfg), siap = eligible && (!prev.elig || !!(st.retrig || {})[sym]); if (st.retrig) delete st.retrig[sym];
+      const eligible = nearReady(g, aCls, cfg), goKey = sym + '|real';
+      // m15Go: satu kali per plan H1, langsung saat M15 siap (tidak bergantung kedip syarat). Mode lama: pemicu saat syarat baru terpenuhi.
+      const siap = cfg.m15Go ? (eligible && st.go[goKey] !== planKey) : (eligible && (!prev.elig || !!(st.retrig || {})[sym])); if (st.retrig) delete st.retrig[sym];
       if (siap) {
+        if (!cfg.m15Go || st.go[sym + '|ready'] !== planKey) {
+        if (cfg.m15Go) st.go[sym + '|ready'] = planKey;
         ev(st, 'ANA', sym, `syarat inti ${g.ltf} terpenuhi (${g.m.ok}/7), ${g.htf} ${g.h.ok}/8, grade ${g.grade}`);
         await mail(st, cfg, 'M', `🎯 ${sym} ${g.dir}: entry ${g.ltf} siap (${g.m.ok}/7, grade ${g.grade})`, [['Simbol', sym], ['Arah', g.dir], ['Syarat entry', g.m.ok + '/7 (inti terpenuhi)'], ['Entry presisi', g.m.entry], ['SL', g.m.sl], ['TP1', g.m.tp != null ? g.m.tp : g.tp1], ['R:R', '1:' + g.m.rr], ['Risiko → potensi TP1', idr(st.balance * cfg.riskPct / 100) + ' → ' + idr(st.balance * cfg.riskPct / 100 * g.m.rr)]]);
-        if (mt5 && !planAuto) await autoReport(st, cfg, await autoQueue(mt5, cfg, g, sym, price, st), g, sym);
+        }
+        if (mt5 && !planAuto) { const au = await autoQueue(mt5, cfg, g, sym, price, st); await autoReport(st, cfg, au, g, sym); if (cfg.m15Go && au.cmd) st.go[goKey] = planKey; }
       }
       // PAPER: eksekusi sesuai pilihan. 'm15' = entry/SL/TP M15 saat syarat M15 terpenuhi; 'konfirm' = saat M15 terpenuhi, ambil SL/TP plan H1; 'h1' = pending LIMIT plan H1 (di atas).
-      const pMode = cfg.paperMode || 'h1', pEl = nearReady(g, { cls: cfg.paperCls || 'low', minSkor: 70 }, cfg), pSiap = pEl && !prev.pElig;
+      const pMode = pModeEff, pEl = nearReady(g, { cls: cfg.paperCls || 'low', minSkor: cfg.paperMinSkor || 70 }, cfg), pKey = sym + '|paper', pSiap = cfg.m15Go ? (pEl && st.go[pKey] !== planKey) : (pEl && !prev.pElig);
       if (pSiap && (pMode === 'm15' || pMode === 'konfirm') && cfg.paperPlan !== false) {
         const kind = pMode === 'm15' ? 'M15' : 'KONF', buy = g.dir === 'BUY', en = g.m.entry;
         const sl = pMode === 'm15' ? g.m.sl : g.sl, tp = pMode === 'm15' ? (g.m.tp != null ? g.m.tp : g.tp1) : g.tp1;
         const rk = Math.abs(en - sl), rr = rk > 0 ? +(Math.abs(tp - en) / rk).toFixed(2) : 0;
         const okSeq = buy ? sl < en && en < tp : tp < en && en < sl;
-        if (!okSeq || rr < cfg.rr) ev(st, 'ANA', sym, `[${kind}] sinyal ${g.m.ok}/7 dilewati: ${!okSeq ? 'urutan entry/SL/TP tidak valid' : 'R:R 1:' + rr + ' di bawah minimum'}`);
-        else if (st.positions.some(x => x.s === sym && x.kind === kind) || st.positions.length >= cfg.maxOpen || st.balance <= 0) ev(st, 'ANA', sym, `[${kind}] sinyal ${g.m.ok}/7 dilewati: posisi/slot penuh`);
+        let pRisk2 = Math.round(st.balance * cfg.riskPct / 100), slBad = null;
+        if (pNeed) { const c = paperRisk(cfg, pSpecs, sym, Math.abs(en - sl), st.balance); if (!c.ok) slBad = c.msg; else pRisk2 = Math.round(c.cost); }
+        if (!okSeq || rr < cfg.rr) { const m = `[${kind}] sinyal ${g.m.ok}/7 dilewati: ${!okSeq ? 'urutan entry/SL/TP tidak valid' : 'R:R 1:' + rr + ' di bawah minimum'}`; if (!cfg.m15Go || goOnce(pKey, m)) ev(st, 'ANA', sym, m); }
+        else if (slBad) { const m = `[${kind}] sinyal ${g.m.ok}/7 dilewati: ${slBad}`; if (!cfg.m15Go || goOnce(pKey, m)) ev(st, 'ANA', sym, m); }
+        else if (st.positions.some(x => x.s === sym && x.kind === kind) || st.positions.length >= cfg.maxOpen || st.balance <= 0) { const m = `[${kind}] sinyal ${g.m.ok}/7 dilewati: posisi/slot penuh`; if (!cfg.m15Go || goOnce(pKey, m)) ev(st, 'ANA', sym, m); }
         else {
           const b = cfg.aiOpen ? await brain(sym, { ...g, m: { ...g.m, sl, tp, rr } }) : { ok: true, note: 'tanpa Brain' };
           ev(st, 'BRN', sym, (b.ok ? 'setuju: ' : 'menolak: ') + b.note);
+          if (cfg.m15Go) st.go[pKey] = planKey;
           if (b.ok) {
-            const pos = { id: Date.now().toString(36), kind, s: sym, a: asset, dir: g.dir, entry: en, sl, tp1: tp, tp2: pMode === 'konfirm' ? g.tp2 : null, rr, tOpen: Date.now(), lastT, bars: 0, riskRp: Math.round(st.balance * cfg.riskPct / 100), grade: g.grade, hOk: g.h.ok, mOk: g.m.ok, why: b.note };
+            const pos = { id: Date.now().toString(36), kind, s: sym, a: asset, dir: g.dir, entry: en, sl, tp1: tp, tp2: pMode === 'konfirm' ? g.tp2 : null, rr, tOpen: Date.now(), lastT, bars: 0, riskRp: pRisk2, grade: g.grade, hOk: g.h.ok, mOk: g.m.ok, why: b.note };
             st.positions.push(pos); ev(st, 'EXE', sym, `[${kind}] ${g.dir} paper dibuka @${pos.entry} SL ${pos.sl} TP ${pos.tp1} (M15 ${g.m.ok}/7) · risiko ${idr(pos.riskRp)}`);
-            await mail(st, cfg, 'Pos', `🚀 AI membuka posisi (paper, ${kind}): ${sym} ${g.dir}`, [['Simbol', sym], ['Arah', g.dir], ['Mode', kind === 'M15' ? 'Plan M15 (6/7)' : 'Konfirmasi M15 → plan H1'], ['Entry', pos.entry], ['SL', pos.sl], ['TP1', pos.tp1], ['R:R', '1:' + pos.rr], ['Risiko', idr(pos.riskRp)], ['Potensi TP1', idr(pos.riskRp * rr)], ['Saldo', idr(st.balance)], ['Alasan AI', b.note]]);
+            await mail(st, cfg, 'Pos', `🚀 AI membuka posisi (paper, ${kind}): ${sym} ${g.dir}`, [['Simbol', sym], ['Arah', g.dir], ['Mode', cfg.m15Go ? 'M15 siap → langsung masuk' : kind === 'M15' ? 'Plan M15 (' + (cfg.m15Min || 6) + '/7)' : 'Konfirmasi M15 → plan H1'], ['Entry', pos.entry], ['SL', pos.sl], ['TP1', pos.tp1], ['R:R', '1:' + pos.rr], ['Risiko', idr(pos.riskRp)], ['Potensi TP1', idr(pos.riskRp * rr)], ['Saldo', idr(st.balance)], ['Alasan AI', b.note]]);
           }
         }
       }
@@ -389,4 +459,4 @@ async function runOnce(store, manual, mt5) {
   await store.setJSON('state', st);
   return { ok: true };
 }
-module.exports = { cancelReal, realAnalyst, judge, brainAuto, autoQueue, classPass, nearReady, planReady, runOnce, getCfg, getState, applyModal, fresh, testMail, DEF };
+module.exports = { effCfg, paperRisk, cancelReal, realAnalyst, judge, brainAuto, autoQueue, classPass, nearReady, planReady, runOnce, getCfg, getState, applyModal, fresh, testMail, DEF };

@@ -12,13 +12,19 @@ export default async req => {
       const b = await req.json().catch(() => ({}));
       if (b.action === 'config' && b.config) {
         const c = b.config, cur = await tower.getCfg(store), nx = { ...cur };
-        for (const k of ['enabled', 'aiOpen', 'emailH', 'emailM', 'emailMn', 'emailPos']) if (typeof c[k] === 'boolean') nx[k] = c[k];
-        if (isFinite(c.modal) && c.modal >= 100000 && c.modal <= 1e10) nx.modal = Math.round(c.modal);
+        for (const k of ['enabled', 'aiOpen', 'emailH', 'emailM', 'emailMn', 'emailPos', 'm15Go']) if (typeof c[k] === 'boolean') nx[k] = c[k];
+        if (isFinite(c.modal) && c.modal >= 1000 && c.modal <= 1e10) nx.modal = Math.round(c.modal);
+        if (typeof c.paperMirror === 'boolean') {
+          nx.paperMirror = c.paperMirror;
+          if (c.paperMirror && !cur.paperMirror && !(isFinite(c.modal) && Math.round(c.modal) !== cur.modal)) { const ac = await getStore('mt5-trading').get('account_report', { type: 'json' }).catch(() => null); if (ac && ac.equity > 0) nx.modal = Math.round(ac.equity); } // saldo simulasi mulai dari ekuitas MT5
+        }
         if (isFinite(c.riskPct) && c.riskPct >= 0.1 && c.riskPct <= 10) nx.riskPct = +c.riskPct;
         if (['1h', '2h', '4h', '1day'].includes(c.htf)) nx.htf = c.htf;
         if (['5min', '15min', '30min'].includes(c.ltf)) nx.ltf = c.ltf;
         if (isFinite(c.rr) && c.rr >= 1 && c.rr <= 10) nx.rr = +c.rr;
         if (['h1', 'm15', 'konfirm'].includes(c.paperMode)) nx.paperMode = c.paperMode;
+        if (['pct', 'sl'].includes(c.paperRiskMode)) nx.paperRiskMode = c.paperRiskMode;
+        if (isFinite(c.paperMaxSlCostPct) && c.paperMaxSlCostPct >= 1 && c.paperMaxSlCostPct <= 50) nx.paperMaxSlCostPct = +c.paperMaxSlCostPct;
         if (isFinite(c.m15Min) && c.m15Min >= 3 && c.m15Min <= 7) nx.m15Min = Math.round(c.m15Min);
         if (Array.isArray(c.symbols)) { const seen = new Set(); nx.symbols = c.symbols.filter(x => x && x.s).map(x => ({ s: String(x.s).trim().replace(/[^A-Za-z0-9._/#-]/g, '').slice(0, 20), a: ['forex', 'saham', 'crypto'].includes(x.a) ? x.a : 'forex' })).filter(x => { const k = x.s.toUpperCase().replace(/[^A-Z0-9]/g, ''); if (!k || seen.has(k)) return false; seen.add(k); return true; }).slice(0, 6); }
         if (c.auto && typeof c.auto === 'object') {
@@ -29,6 +35,8 @@ export default async req => {
           if (isFinite(x.maxOpen) && x.maxOpen >= 1 && x.maxOpen <= 3) au.maxOpen = Math.round(x.maxOpen);
           if (isFinite(x.cooldownMin) && x.cooldownMin >= 0 && x.cooldownMin <= 1440) au.cooldownMin = Math.round(x.cooldownMin);
           if (['near', 'plan', 'konfirm'].includes(x.mode)) au.mode = x.mode;
+          if (['pct', 'sl'].includes(x.riskMode)) au.riskMode = x.riskMode;
+          if (isFinite(x.maxSlCostPct) && x.maxSlCostPct >= 1 && x.maxSlCostPct <= 50) au.maxSlCostPct = +x.maxSlCostPct;
           if (['low', 'medium', 'high', 'score'].includes(x.cls)) au.cls = x.cls;
           if (isFinite(x.minSkor) && x.minSkor >= 40 && x.minSkor <= 100) au.minSkor = Math.round(x.minSkor);
           if (typeof x.kill === 'boolean') { au.kill = x.kill; await getStore('mt5-trading').setJSON('auto_kill', { on: x.kill, at: Date.now() }); if (x.kill === true) await tower.cancelReal(store, getStore('mt5-trading'), '*', 'kill switch').catch(() => null); }

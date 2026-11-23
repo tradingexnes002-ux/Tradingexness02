@@ -11,7 +11,7 @@ exports.handler = async e => {
     const htf = ['1h', '2h', '4h', '1day'].includes(b.htf) ? b.htf : '1h', H = LB[htf], M = LB[ltf];
     const src = await pickSource(b.symbol, [ltf, htf]), vl = await candles(b.symbol, ltf, 100, 50000, src), vh = await candles(b.symbol, htf, 200, ttlOf(htf), src);
     const sl_ = scan(b.symbol, ltf, vl), sh = scan(b.symbol, htf, vh);
-    let g = null; try { g = god(vh, vl, parseFloat(b.rr) || 3, { h: htf, l: ltf }); } catch (x) {}
+    let g = null; try { g = god(vh, vl.slice(0, -1), parseFloat(b.rr) || 3, { h: htf, l: ltf, m15Min: parseInt(b.m15) || 6 }); } catch (x) {}
     const s = mode === 'ltf' ? sl_ : { ...sh, price: sl_.price };
     const v = mode === 'ltf' ? vl : vh, TF = mode === 'ltf' ? M : H;
     const ctx = v.slice(-30).map(x => [x.t.slice(5, 16), x.o, x.h, x.l, x.c].join(' ')).join('\n');

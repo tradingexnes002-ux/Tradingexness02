@@ -178,3 +178,33 @@ Di panel "Eksekusi otomatis ke MT5" ada pilihan **Mode order**:
 - Kelas berlaku untuk mode "dekat harga" dan posisi paper (H1 dan M15 sama-sama dinilai). Di mode "Plan H1" hanya H1 yang dinilai karena LIMIT dipasang sebelum harga masuk zona; pada kelas Skor, skor dihitung dari H1 saja (H1 ok / 8 x 100).
 - **Brain AI tidak lagi memblokir order saat AI gagal.** Jika kunci AI kosong atau panggilan gagal (HTTP error, timeout, balasan bukan JSON), order lanjut sesuai aturan dan alasan kegagalan ditulis di log (baris BRN). AI hanya menahan order bila benar-benar menjawab "tolak". Untuk mematikan AI sepenuhnya, hapus centang "Brain AI menyetujui tiap order" lalu Terapkan.
 - Mengganti kelas mengubah populasi trade paper yang dinilai Judge; riwayat lama tidak direset.
+
+## Pembaruan v14c
+
+- **Dashboard = Control Tower.** Keduanya kini menghitung M15 dari candle yang SUDAH TUTUP (candle berjalan dibuang), dan dashboard ikut memakai pengaturan "Entry M15 N/7" dari Control Tower. Sebelumnya dashboard memakai candle berjalan dan selalu minta 6/7 di server, sehingga angkanya (5/7) berbeda dari Control Tower (4/7) dan entry tidak pernah terkunci.
+- **Entry terkunci dibiarkan terbuka.** Saat syarat M15 terpenuhi, entry/SL/TP dikunci dan tetap tampil (🔒) sampai ada plan H1 baru, kena SL/TP, atau arah berbalik. Syarat yang menghilang di candle berikutnya tidak mencabut kunci.
+- **Opsi baru "Saat M15 siap → Langsung masuk (market)".** Paper: posisi dibuka di harga sinyal. Real: perintah MARKET ke EA. Satu kali per entri (tidak masuk ulang karena syarat berkedip); setelah posisi selesai TP/SL boleh masuk lagi di plan yang sama bila syarat M15 terpenuhi lagi. Semua gerbang real tetap berlaku (AUTO_TRADE_ENABLED, MT5_ORDERS_ENABLED, dry-run, kill switch, batas rugi harian, Judge, Brain).
+- **EA v1.50 wajib dipasang ulang** agar mengerti perintah MARKET. Input baru `MarketMaxDriftPoints` (0 = nonaktif).
+
+## Pembaruan v14d: mode risiko "biaya SL"
+
+- Eksekusi otomatis punya pilihan **Mode risiko**: `% ekuitas` (lot dihitung, perilaku lama) atau `biaya SL` (lot minimum broker).
+- Mode biaya SL: order boleh masuk selama kerugian jika SL kena (jarak SL x nilai per poin x lot minimum) tidak melebihi **Maks biaya SL % ekuitas** (default dan maksimum 50). Persentase "Risiko %/order" tidak dipakai di mode ini.
+- Tabel "Cek lot per simbol" menampilkan hitungan lengkap: biaya SL per posisi, ekuitas, ekuitas yang dibutuhkan, dan **kurang berapa** untuk bisa open.
+- Brain AI tetap menilai kualitas setup, tetapi tidak menolak hanya karena besar biaya SL.
+- Pengaman yang tetap ada: Judge gate, dry-run, kill switch, batas rugi harian, cek margin bebas di EA, dan batas spread EA (`MaxSpreadPctOfSL`).
+- EA v1.60: pasang ulang. Input baru `MaxSlCostPct` (plafon keras di sisi EA, default 50).
+
+## Pembaruan v14f: paper ikut mode biaya SL
+
+- Control Tower punya pilihan **Risiko paper**: `% saldo` (lama) atau `biaya SL` (sama dengan real).
+- Mode biaya SL di paper: lot minimum dari spesifikasi EA, biaya SL = jarak SL x nilai per poin x lot min, dibandingkan dengan saldo simulasi. Trade dilewati bila melebihi **Maks biaya SL % saldo** (maks 50). Untung/rugi paper dihitung dari biaya SL itu (1R = biaya SL), bukan dari persen risiko.
+- Butuh EA online (spesifikasi simbol dikirim EA). Tanpa itu paper di mode ini dilewati dengan pesan jelas.
+- Untuk meniru akun real, set modal simulasi sama dengan ekuitas MT5.
+
+## Pembaruan v14g: paper "Samakan dengan real"
+
+- Control Tower punya pilihan **Paper → Samakan dengan real**. Saat aktif, paper memakai pengaturan eksekusi real: mode order, kelas syarat, skor minimum, mode risiko (% atau biaya SL), plafon biaya SL, risiko %/order, dan maks posisi.
+- Aturan lot dan risiko meniru EA: lot dibulatkan ke bawah sesuai anggaran, lot minimum hanya boleh jika risikonya di bawah plafon, dan trade ditolak bila spread > 15% dari SL.
+- Saldo simulasi dimulai dari ekuitas MT5 saat opsi ini pertama kali diaktifkan (kecuali Anda sudah mengubah kolom Modal awal pada saat yang sama). Modal awal tetap bisa diedit kapan saja.
+- Perbedaan yang tetap ada: paper tidak mensimulasikan spread/slippage saat terisi, dan tidak terkena kill switch, Judge, Brain real, batas rugi harian, atau cek margin.

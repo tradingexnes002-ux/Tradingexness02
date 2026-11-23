@@ -16,7 +16,7 @@ export default async req => {
     if(!isCancel && account.tradeMode!=='DEMO' && process.env.MT5_ALLOW_LIVE!=='true') { c.status='BLOCKED'; c.message='Akun bukan DEMO; server live gate tertutup'; await store.setJSON('command_current',c); return text('NONE'); }
     // Pipe-delimited protocol keeps the MQL5 bridge dependency-free.
     if(isCancel) return text([c.id,c.symbol,'CANCEL',c.ticket||0,0,0,0,'C'].join('|'));
-    return text([c.id,c.symbol,c.side,c.entry,c.sl,c.tp,c.riskPct,c.mode==='plan'?'P':'N'].join('|'));
+    return text([c.id,c.symbol,c.side,c.entry,c.sl,c.tp,c.riskPct,(c.mode==='market'?'M':c.mode==='plan'?'P':'N')+(c.slMode?'S':'')].join('|'));
   }
   if(req.method==='POST') {
     try {

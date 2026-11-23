@@ -4,7 +4,7 @@
 //| Orders are NEVER sent unless EnableExecution=true.                |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.40"
+#property version "1.61"
 #property description "AI Exness Bot - controlled execution bridge; demo-only by default"
 
 #include <Trade/Trade.mqh>
@@ -23,6 +23,8 @@ input double MaxSpreadPctOfSL    = 15.0;  // tolak order jika spread melebihi pe
 input int    MaxEntryDistancePoints = 500; // mode NEAR: tolak entry yang terlalu jauh dari harga (0 = tanpa batas)
 input int    PlanMaxDistancePoints  = 0;   // mode PLAN H1: batas jarak entry dari harga; 0 = tanpa batas (entry di zona jauh tidak ditolak)
 input int    PlanExpirySeconds      = 14400; // mode PLAN H1: pending LIMIT kedaluwarsa otomatis (default 4 jam)
+input double MaxSlCostPct       = 50.0;  // mode BIAYA-SL: plafon keras kerugian jika SL kena pada lot minimum (% ekuitas); di atas ini order ditolak
+input int    MarketMaxDriftPoints = 0;    // mode MARKET (M15 siap -> langsung masuk): tolak jika harga pasar sudah bergeser sejauh ini dari harga sinyal; 0 = nonaktif (R:R dihitung ulang dari harga pasar)
 input int    MaxQuoteAgeSeconds  = 30;
 input double MinRiskReward       = 1.20;
 input int    DeviationPoints     = 20;
@@ -142,7 +144,8 @@ void ProcessCommand(const string line)
 {
    string p[]; int n=StringSplit(line,'|',p);
    if(n<7) return;
-   bool planMode=(n>=8 && Trim(p[7])=="P");
+   string flag=(n>=8 ? Trim(p[7]) : "");
+   bool planMode=(StringFind(flag,"P")>=0), marketMode=(StringFind(flag,"M")>=0), slMode=(StringFind(flag,"S")>=0);
    string id=Trim(p[0]), symbol=Trim(p[1]), side=Trim(p[2]);
    double entry=StringToDouble(p[3]), sl=StringToDouble(p[4]), tp=StringToDouble(p[5]), riskPct=StringToDouble(p[6]);
    if(id!="" && symbol!="" && side=="CANCEL"){ ProcessCancel(id,symbol,(ulong)StringToInteger(p[3])); return; }
@@ -150,7 +153,7 @@ void ProcessCommand(const string line)
    if(!EnableExecution){ Ack(id,"BLOCKED","","EA EnableExecution=false"); return; }
    long mode=AccountInfoInteger(ACCOUNT_TRADE_MODE);
    if(!AllowLiveAccount && mode!=ACCOUNT_TRADE_MODE_DEMO){ Ack(id,"BLOCKED","","Akun bukan DEMO; AllowLiveAccount=false"); return; }
-   if(riskPct<=0 || riskPct>MaxRiskPct){ Ack(id,"BLOCKED","","RiskPct melebihi batas EA"); return; }
+   if(riskPct<=0 || (!slMode && riskPct>MaxRiskPct)){ Ack(id,"BLOCKED","","RiskPct melebihi batas EA"); return; }
    double eqNow=AccountInfoDouble(ACCOUNT_EQUITY), eq0=DayStartEquity();
    if(eq0>0 && eqNow<=eq0*(1.0-MaxDailyLossPct/100.0)){ Ack(id,"BLOCKED","","Batas rugi harian EA tercapai; order baru diblokir hari ini"); return; }
    if(TotalActive()>=MaxTotalActive){ Ack(id,"BLOCKED","","Batas total posisi/order aktif EA tercapai"); return; }
@@ -168,35 +171,55 @@ void ProcessCommand(const string line)
    int digits=(int)SymbolInfoInteger(symbol,SYMBOL_DIGITS);
    entry=NormalizeDouble(entry,digits); sl=NormalizeDouble(sl,digits); tp=NormalizeDouble(tp,digits);
    ENUM_ORDER_TYPE type=(side=="BUY" ? ORDER_TYPE_BUY : ORDER_TYPE_SELL);
-   double price=entry;
+   double price=entry, refEntry=entry;
+   if(marketMode)
+   {
+      price=NormalizeDouble((side=="BUY" ? tick.ask : tick.bid),digits); entry=price;
+      if(MarketMaxDriftPoints>0 && MathAbs(price-refEntry)>MarketMaxDriftPoints*point){ Ack(id,"BLOCKED","","Harga pasar sudah bergeser dari harga sinyal M15 (melebihi MarketMaxDriftPoints); order market dibatalkan"); return; }
+   }
    double stopLevel=SymbolInfoInteger(symbol,SYMBOL_TRADE_STOPS_LEVEL)*point;
    double freezeLevel=SymbolInfoInteger(symbol,SYMBOL_TRADE_FREEZE_LEVEL)*point;
    double minGap=MathMax(stopLevel,freezeLevel);
    double rrRisk=MathAbs(entry-sl), rrReward=(side=="BUY" ? tp-entry : entry-tp);
    if(rrRisk<=0 || rrReward<=0 || rrReward/rrRisk<MinRiskReward){ Ack(id,"REJECTED","","R:R di bawah batas minimum atau SL/TP tidak valid"); return; }
-   if(side=="BUY" && !(sl<entry && entry<tp && entry<tick.ask)){ Ack(id,"REJECTED","","BUY LIMIT tidak valid terhadap harga MT5 terkini; perlu SL < entry < TP dan entry di bawah Ask"); return; }
-   if(side=="SELL" && !(tp<entry && entry<sl && entry>tick.bid)){ Ack(id,"REJECTED","","SELL LIMIT tidak valid terhadap harga MT5 terkini; perlu TP < entry < SL dan entry di atas Bid"); return; }
+   if(marketMode && (side=="BUY" ? !(sl<price && price<tp) : !(tp<price && price<sl))){ Ack(id,"REJECTED","","Order MARKET tidak valid: SL/TP berada di sisi yang salah dari harga pasar saat ini"); return; }
+   if(!marketMode && side=="BUY" && !(sl<entry && entry<tp && entry<tick.ask)){ Ack(id,"REJECTED","","BUY LIMIT tidak valid terhadap harga MT5 terkini; perlu SL < entry < TP dan entry di bawah Ask"); return; }
+   if(!marketMode && side=="SELL" && !(tp<entry && entry<sl && entry>tick.bid)){ Ack(id,"REJECTED","","SELL LIMIT tidak valid terhadap harga MT5 terkini; perlu TP < entry < SL dan entry di atas Bid"); return; }
    double entryGap=(side=="BUY" ? tick.ask-entry : entry-tick.bid);
    long maxDist=(planMode ? PlanMaxDistancePoints : MaxEntryDistancePoints);
-   if(maxDist>0 && entryGap>maxDist*point){ Ack(id,"BLOCKED","","Harga entry terlalu jauh dari quote MT5 terkini; kemungkinan data/sumber harga sudah berubah. Buat analisa baru"); return; }
-   if(entryGap<minGap || MathAbs(price-sl)<minGap || MathAbs(tp-price)<minGap){ Ack(id,"REJECTED","","Entry atau SL/TP terlalu dekat menurut stop/freeze level broker"); return; }
-   double volume=CalcVolume(symbol,type,price,sl,riskPct);
-   if(volume<=0)
+   if(!marketMode && maxDist>0 && entryGap>maxDist*point){ Ack(id,"BLOCKED","","Harga entry terlalu jauh dari quote MT5 terkini; kemungkinan data/sumber harga sudah berubah. Buat analisa baru"); return; }
+   if((!marketMode && entryGap<minGap) || MathAbs(price-sl)<minGap || MathAbs(tp-price)<minGap){ Ack(id,"REJECTED","","Entry atau SL/TP terlalu dekat menurut stop/freeze level broker"); return; }
+   double volume=0;
+   if(slMode)
+   {
+      // Mode biaya-SL: selalu lot minimum. Syarat: kerugian jika SL kena <= MaxSlCostPct ekuitas, dan margin bebas cukup.
+      double vminS=SymbolInfoDouble(symbol,SYMBOL_VOLUME_MIN), stepS=SymbolInfoDouble(symbol,SYMBOL_VOLUME_STEP);
+      if(vminS<=0 || stepS<=0){ Ack(id,"REJECTED","","Spesifikasi lot simbol tidak valid"); return; }
+      volume=NormalizeDouble(vminS,VolumeDigits(stepS));
+      double pctS=RiskPctOf(symbol,type,price,sl,volume), eqS=AccountInfoDouble(ACCOUNT_EQUITY);
+      if(pctS<=0){ Ack(id,"REJECTED","","Gagal menghitung biaya SL"); return; }
+      if(pctS>MaxSlCostPct){ Ack(id,"REJECTED","","Biaya SL "+DoubleToString(pctS,1)+"% ekuitas melebihi plafon EA MaxSlCostPct="+DoubleToString(MaxSlCostPct,1)+"%; butuh ekuitas minimal sekitar "+DoubleToString(eqS*pctS/MaxSlCostPct,2)); return; }
+      double mgS=0; if(!OrderCalcMargin(type,symbol,volume,price,mgS) || mgS>AccountInfoDouble(ACCOUNT_MARGIN_FREE)){ Ack(id,"REJECTED","","Margin bebas tidak cukup untuk lot minimum (butuh "+DoubleToString(mgS,2)+", tersedia "+DoubleToString(AccountInfoDouble(ACCOUNT_MARGIN_FREE),2)+")"); return; }
+   }
+   else volume=CalcVolume(symbol,type,price,sl,riskPct);
+   if(!slMode && volume<=0)
    {
       double vminR=SymbolInfoDouble(symbol,SYMBOL_VOLUME_MIN), minPct=RiskPctOf(symbol,type,price,sl,vminR);
       Ack(id,"REJECTED","","Lot minimum "+DoubleToString(vminR,2)+" berisiko "+DoubleToString(minPct,2)+"% ekuitas, di atas plafon "+DoubleToString(MathMax(riskPct,AllowMinLotOverBudget?MaxRiskPctWithMinLot:riskPct),1)+"%. Naikkan modal, pilih SL lebih sempit, atau ganti simbol");
       return;
    }
    double actualPct=RiskPctOf(symbol,type,price,sl,volume);
-   string riskNote=(actualPct>riskPct*1.001 ? " | PERHATIAN: lot minimum dipakai, risiko aktual "+DoubleToString(actualPct,2)+"% (diminta "+DoubleToString(riskPct,2)+"%)" : " | risiko aktual "+DoubleToString(actualPct,2)+"%");
-   if(DryRun){ Ack(id,"DRYRUN","","Validasi lolos, order TIDAK dikirim (DryRun=true). Volume "+DoubleToString(volume,VolumeDigits(SymbolInfoDouble(symbol,SYMBOL_VOLUME_STEP)))+", entry "+DoubleToString(entry,digits)+riskNote); return; }
+   string riskNote=(slMode ? " | MODE BIAYA-SL: kerugian jika SL kena "+DoubleToString(actualPct,1)+"% ekuitas (lot minimum)" : actualPct>riskPct*1.001 ? " | PERHATIAN: lot minimum dipakai, risiko aktual "+DoubleToString(actualPct,2)+"% (diminta "+DoubleToString(riskPct,2)+"%)" : " | risiko aktual "+DoubleToString(actualPct,2)+"%");
+   if(DryRun){ Ack(id,"DRYRUN","",(marketMode ? "[MARKET] " : "")+"Validasi lolos, order TIDAK dikirim (DryRun=true). Volume "+DoubleToString(volume,VolumeDigits(SymbolInfoDouble(symbol,SYMBOL_VOLUME_STEP)))+", entry "+DoubleToString(entry,digits)+riskNote); return; }
    int expSec=(planMode ? PlanExpirySeconds : PendingExpirySeconds);
    trade.SetExpertMagicNumber(MagicNumber); trade.SetDeviationInPoints(DeviationPoints); trade.SetTypeFillingBySymbol(symbol);
    string gv="AIEX_CMD_"+id;
    if(GlobalVariableCheck(gv)){ Ack(id,"DUPLICATE","","Perintah sudah diproses sebelumnya"); return; }
    GlobalVariableSet(gv,(double)TimeCurrent()); // idempotency guard: do not resend if acknowledgement is lost
-   bool ok=(side=="BUY" ? trade.BuyLimit(volume,entry,symbol,sl,tp,ORDER_TIME_SPECIFIED,TimeCurrent()+expSec,"AI Exness "+id) : trade.SellLimit(volume,entry,symbol,sl,tp,ORDER_TIME_SPECIFIED,TimeCurrent()+expSec,"AI Exness "+id));
-   if(ok){ string tk=(string)trade.ResultOrder(); Ack(id,"EXECUTED",tk,"Pending limit diterima broker; volume "+DoubleToString(volume,VolumeDigits(SymbolInfoDouble(symbol,SYMBOL_VOLUME_STEP)))+riskNote); Print("Executed ",side," ",symbol," volume ",volume," ticket ",tk); }
+   bool ok;
+   if(marketMode) ok=(side=="BUY" ? trade.Buy(volume,symbol,0.0,sl,tp,"AI Exness "+id) : trade.Sell(volume,symbol,0.0,sl,tp,"AI Exness "+id));
+   else ok=(side=="BUY" ? trade.BuyLimit(volume,entry,symbol,sl,tp,ORDER_TIME_SPECIFIED,TimeCurrent()+expSec,"AI Exness "+id) : trade.SellLimit(volume,entry,symbol,sl,tp,ORDER_TIME_SPECIFIED,TimeCurrent()+expSec,"AI Exness "+id));
+   if(ok){ string tk=(string)trade.ResultOrder(); Ack(id,"EXECUTED",tk,(marketMode ? "Order MARKET terisi; volume " : "Pending limit diterima broker; volume ")+DoubleToString(volume,VolumeDigits(SymbolInfoDouble(symbol,SYMBOL_VOLUME_STEP)))+riskNote); Print("Executed ",side," ",symbol," volume ",volume," ticket ",tk); }
    else { Ack(id,"FAILED","",trade.ResultRetcodeDescription()); Print("Order failed: ",trade.ResultRetcodeDescription()); }
 }
 
