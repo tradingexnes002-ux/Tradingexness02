@@ -10,7 +10,8 @@ exports.handler = async e => {
   const items = await Promise.all(sy.map(async s => {
     try {
       const src = await pickSource(s, [ltf, htf]), v = await candles(s, ltf, 100, 50000, src), it = scan(s, ltf, v); it.src = src;
-      try { it.god = god(await candles(s, htf, 200, ttlOf(htf), src), v.slice(0, -1), rr, { h: htf, l: ltf, m15Min: parseInt(q.m15) || 6 }); // candle M15 yang masih berjalan dibuang: hitungan identik dengan Control Tower } catch (x) { it.godError = x.message; }
+      // candle M15 yang masih berjalan dibuang: hitungan identik dengan Control Tower
+      try { it.god = god(await candles(s, htf, 200, ttlOf(htf), src), v.slice(0, -1), rr, { h: htf, l: ltf, m15Min: parseInt(q.m15) || 6 }); } catch (x) { it.godError = x.message; }
       return it;
     } catch (err) { return { symbol: s, error: err.message }; }
   }));
