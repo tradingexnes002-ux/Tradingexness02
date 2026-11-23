@@ -1,9 +1,9 @@
-const { candles, god, auth, res, setStore, blobs, pickSource } = require('../lib/core');
+const { candles, god, view, res, setStore, blobs, pickSource } = require('../lib/core');
 const ttlOf = iv => ({ '1h': 600000, '2h': 900000, '4h': 1800000, '1day': 3600000 })[iv] || 600000;
 const ALL = ['5min', '15min', '30min', '1h', '2h', '4h', '1day'];
 const ts = t => Math.floor(Date.parse(t.length > 10 ? t.replace(' ', 'T') + 'Z' : t + 'T00:00:00Z') / 1000);
 exports.handler = async e => {
-  if (!auth(e)) return res(401, { error: 'Password salah. Klik tombol Password.' });
+  if (!view(e)) return res(401, { error: 'Password salah. Klik tombol Password.' });
   if ((process.env.DATA_SOURCE || 'twelve') !== 'twelve') setStore(await blobs(e));
   const q = e.queryStringParameters || {};
   const ltf = ['5min', '15min', '30min'].includes(q.ltf) ? q.ltf : '15min', htf = ['1h', '2h', '4h', '1day'].includes(q.htf) ? q.htf : '1h';

@@ -1,6 +1,9 @@
 const cache = new Map();
 const res = (c, b) => ({ statusCode: c, headers: { 'content-type': 'application/json' }, body: JSON.stringify(b) });
-const auth = e => !process.env.APP_PASSWORD || (e.headers['x-app-key'] === process.env.APP_PASSWORD);
+// Dua tingkat akses: PEMILIK (header x-app-key = APP_PASSWORD) dan PENGUNJUNG (lihat saja, bila PUBLIC_VIEW tidak 'false').
+// Tanpa APP_PASSWORD terkonfigurasi tidak ada pemilik: fitur kontrol, AI berbayar, dan akun real tertutup untuk semua orang.
+const owner = e => !!process.env.APP_PASSWORD && e.headers['x-app-key'] === process.env.APP_PASSWORD;
+const auth = owner, view = e => owner(e) || process.env.PUBLIC_VIEW !== 'false';
 
 // ---- Sumber data Exness lewat EA MT5 (DATA_SOURCE = twelve | exness | auto) ----
 let _store = null;
@@ -238,4 +241,4 @@ function god(v1raw, v15, minRR = 3, tf = {}) {
     tp1: f(tp1), tp2: tp2 === null ? null : f(tp2), tp: f(tp1), rr, minRR, status, dist, trig: status === 'SIAP ENTRY',
     supply: zz(supZ), demand: zz(demZ), skorTrend: sT, skorPotensi: sP, skor, entryEligible, planEligible: skor >= 70 };
 }
-module.exports = { candles, scan, validate, god, auth, res, setStore, blobs, ingest, exName, pickSource };
+module.exports = { candles, scan, validate, god, auth, owner, view, res, setStore, blobs, ingest, exName, pickSource };

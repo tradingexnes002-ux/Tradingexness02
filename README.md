@@ -213,3 +213,11 @@ Di panel "Eksekusi otomatis ke MT5" ada pilihan **Mode order**:
 
 - Mode "M15 siap → langsung masuk" tidak lagi dimintai persetujuan Brain AI (paper dan real). Ambang N/7 M15 adalah aturan pemilik; syarat "inti" atau sentuhan zona H1 tidak dipakai sebagai alasan menolak. Gerbang lain tetap berlaku: kelas syarat, biaya SL dan lot, spread, Judge, dry-run, kill switch, batas rugi harian.
 - Di mode M15 tanpa "langsung masuk", Brain tetap dipakai tetapi diberi tahu aturan N/7 itu.
+
+## Pembaruan v14j: akses pemilik vs pengunjung
+
+- **Pengunjung (tanpa password):** dashboard, harga, analisa kode, dan simulasi (paper) bisa dilihat. Simulasi tetap berjalan otomatis lewat jadwal. Semua yang berkaitan dengan akun real disembunyikan: panel MT5, eksekusi otomatis, ekuitas/saldo MT5, order real, dan baris log yang menyangkut real/MT5/auto.
+- **Pemilik (APP_PASSWORD):** semua fitur: ubah pengaturan, jalankan AI, Analisa AI, kontrol akun real, kill switch. Klik tombol Password di dashboard.
+- Tanpa APP_PASSWORD terkonfigurasi tidak ada pemilik: semua kontrol tertutup.
+- `PUBLIC_VIEW=false` di Netlify menutup juga tampilan untuk pengunjung (semua wajib password).
+- Penguncian proses: Control Tower tidak berjalan dua kali bersamaan (mencegah order ganda saat jadwal dan klik manual bertumpuk).

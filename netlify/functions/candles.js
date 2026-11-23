@@ -1,7 +1,7 @@
-const { candles, scan, god, auth, res, setStore, blobs, pickSource } = require('../lib/core');
+const { candles, scan, god, view, res, setStore, blobs, pickSource } = require('../lib/core');
 const ttlOf = iv => ({ '1h': 600000, '2h': 900000, '4h': 1800000, '1day': 3600000 })[iv] || 600000;
 exports.handler = async e => {
-  if (!auth(e)) return res(401, { error: 'Password salah. Klik tombol Password.' });
+  if (!view(e)) return res(401, { error: 'Password salah. Klik tombol Password.' });
   if ((process.env.DATA_SOURCE || 'twelve') !== 'twelve') setStore(await blobs(e));
   const q = e.queryStringParameters || {};
   const ltf = ['5min', '15min', '30min'].includes(q.interval) ? q.interval : '15min';

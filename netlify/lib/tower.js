@@ -313,7 +313,14 @@ async function cancelReal(store, mt5, sym, why = 'dibatalkan manual') {
   await store.setJSON('state', st);
   return out;
 }
+// Satu proses Control Tower pada satu waktu: dua proses yang tumpang tindih (jadwal + tombol manual) bisa saling menimpa state dan mengirim order yang sama dua kali.
 async function runOnce(store, manual, mt5) {
+  const lk = await store.get('run_lock', { type: 'json' }).catch(() => null);
+  if (lk && Date.now() - lk.t < 100000) return { skipped: true };
+  await store.setJSON('run_lock', { t: Date.now() }).catch(() => null);
+  try { return await runOnceInner(store, manual, mt5); } finally { await store.setJSON('run_lock', { t: 0 }).catch(() => null); }
+}
+async function runOnceInner(store, manual, mt5) {
   core.setStore(store);
   const cfg = effCfg(await getCfg(store)), st = await getState(store, cfg);
   if (!cfg.enabled && !manual) return { skipped: 'nonaktif' };

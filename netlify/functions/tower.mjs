@@ -3,11 +3,13 @@ import tower from '../lib/tower.js';
 import core from '../lib/core.js';
 const J = (o, c = 200) => new Response(JSON.stringify(o), { status: c, headers: { 'content-type': 'application/json' } });
 export default async req => {
-  const pw = process.env.APP_PASSWORD;
-  if (pw && req.headers.get('x-app-key') !== pw) return J({ error: 'Password salah. Klik tombol Password.' }, 401);
+  const pw = process.env.APP_PASSWORD, owner = !!pw && req.headers.get('x-app-key') === pw, pub = process.env.PUBLIC_VIEW !== 'false';
+  if (!owner && !pub) return J({ error: 'Password salah. Klik tombol Password.' }, 401);
+  const wantRun = new URL(req.url).searchParams.get('run') === '1';
+  if (!owner && (req.method === 'POST' || wantRun)) return J({ error: pw ? 'Hanya pemilik (password) yang boleh mengubah pengaturan, menjalankan AI, atau menyentuh akun real.' : 'APP_PASSWORD belum dikonfigurasi di Netlify; kontrol dinonaktifkan.' }, 401);
   try {
     const store = getStore('tower');
-    if (new URL(req.url).searchParams.get('run') === '1') await tower.runOnce(store, false, getStore('mt5-trading'));
+    if (wantRun) await tower.runOnce(store, false, getStore('mt5-trading'));
     if (req.method === 'POST') {
       const b = await req.json().catch(() => ({}));
       if (b.action === 'config' && b.config) {
@@ -50,8 +52,13 @@ export default async req => {
       if (b.action === 'testmail') return J({ ok: await tower.testMail() });
     }
     const config = await tower.getCfg(store), state = await tower.getState(store, config);
+    if (!owner) { // PENGUNJUNG: simulasi saja. Semua yang berkaitan dengan akun real, pengaturan eksekusi, dan perintah MT5 dibuang.
+      const REAL = /real|auto|mt5|\bEA\b|ekuitas|akun|dry-?run|kill/i, { auto, ...pubCfg } = config;
+      const pubState = { ...state, real: {}, realWhy: {}, go: {}, goWhy: {}, retrig: {}, log: (state.log || []).filter(l => !REAL.test(l.m || '')) };
+      return J({ role: 'viewer', config: pubCfg, state: pubState, mail: false, ai: false, gates: { orders: false, live: false, auto: false }, judge: tower.judge(state, {}), acct: null, kill: false, day: null });
+    }
     const m5 = getStore('mt5-trading'), acc = await m5.get('account_report', { type: 'json' }).catch(() => null), kill = await m5.get('auto_kill', { type: 'json' }).catch(() => null), day = await m5.get('auto_day', { type: 'json' }).catch(() => null);
-    return J({ config, state, mail: !!(process.env.RESEND_KEY && process.env.EMAIL_TO), ai: !!(process.env.GEMINI_KEY || process.env.ANTHROPIC_KEY),
+    return J({ role: 'owner', config, state, mail: !!(process.env.RESEND_KEY && process.env.EMAIL_TO), ai: !!(process.env.GEMINI_KEY || process.env.ANTHROPIC_KEY),
       gates: { orders: process.env.MT5_ORDERS_ENABLED === 'true', live: process.env.MT5_ALLOW_LIVE === 'true', auto: process.env.AUTO_TRADE_ENABLED === 'true' },
       judge: tower.judge(state, config.auto || {}),
       acct: acc ? { specs: (() => { const o = {}; for (const it of config.symbols || []) { const nm = core.exName(it.s), sp = (acc.specs || []).find(x => x.s === nm); if (sp) o[it.s] = sp; } return o; })(), mode: acc.tradeMode, currency: acc.currency, balance: acc.balance, equity: acc.equity, active: acc.active || 0, age: Math.round((Date.now() - acc.receivedAt) / 1000) } : null, kill: !!(kill && kill.on), day });

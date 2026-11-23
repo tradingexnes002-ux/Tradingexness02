@@ -2,7 +2,7 @@ const { candles, scan, validate, god, auth, res, setStore, blobs, pickSource } =
 const ttlOf = iv => ({ '1h': 600000, '2h': 900000, '4h': 1800000, '1day': 3600000 })[iv] || 600000;
 const LB = { '5min': 'M5', '15min': 'M15', '30min': 'M30', '1h': 'H1', '2h': 'H2', '4h': 'H4', '1day': 'D1' };
 exports.handler = async e => {
-  if (!auth(e)) return res(401, { error: 'Password salah. Klik tombol Password.' });
+  if (!auth(e)) return res(401, { error: 'Analisa AI hanya untuk pemilik: klik tombol Password dan isi password pemilik.' });
   if ((process.env.DATA_SOURCE || 'twelve') !== 'twelve') setStore(await blobs(e));
   try {
     if (!process.env.GEMINI_KEY && !process.env.ANTHROPIC_KEY) throw new Error('Isi ANTHROPIC_KEY (Claude) atau GEMINI_KEY di Netlify');
