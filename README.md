@@ -227,3 +227,13 @@ Di panel "Eksekusi otomatis ke MT5" ada pilihan **Mode order**:
 - EMAIL_TO boleh berisi beberapa alamat (pisah koma). Tiap alamat dikirim terpisah.
 - Tombol Tes email menampilkan alasan sebenarnya dari Resend, dan log memuat "email gagal: ..." bila pengiriman otomatis gagal.
 - Pengirim bawaan Resend (onboarding@resend.dev) hanya bisa mengirim ke email pemilik akun Resend. Untuk alamat lain: verifikasi domain di resend.com/domains, lalu isi EMAIL_FROM.
+
+## Pembaruan v14l: syarat H1 dan M15 DIGANTI dengan komponen God 62 PERSONAL
+
+Sumber script tidak bisa dibuka; dasarnya INPUT dari screenshot (ALMA 2/5/0.85, TIMEFRAME 15m, Multiplier 8, Swing 10, Box Width 2.5, S/R Strength 2, BOTH). Pemetaan syarat ke komponen adalah tafsiran. Ukuran order 10% ekuitas God 62 tidak dipakai.
+- ARAH plan = sinyal God 62 (ALMA2 close vs open, TF 15m x8 = 2 jam, candle tutup). EMA20/50 dan RSI tidak lagi dipakai sebagai syarat.
+- Zona supply/demand: swing 10, tebal = ATR(50) x 2.5/10, batal saat CLOSE menembus (BOS).
+- H1 (8): arah God 62, zona valid, ruang/R:R, pasar aktif, BOS searah, struktur HL/LH, zona segar, level S/R di zona.
+- M15 (7): harga di zona H1, sinyal God 62 searah baru berbalik (maks 2 bucket), R:R, volatilitas, BOS M15, warna bar God 62 M15, level S/R dekat harga.
+- Jumlah syarat tetap 8 dan 7 agar ambang N/7, kelas syarat, dan UI tetap jalan. Konstanta ada di `G62` pada core.js.
+- `node tools/backtest.js data_M15.csv` membandingkan acuan H1 + entry M15 dengan acuan H4 + entry H1 dan pembanding God 62 murni. Perlu data MT5 asli.

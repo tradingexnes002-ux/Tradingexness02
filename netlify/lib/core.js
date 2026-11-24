@@ -123,12 +123,44 @@ function validate(p, s) {
   return { ok: !w.length, warn: w, rr, distAtr: +d.toFixed(2) };
 }
 
-function alma(a, p = 9, off = 0.85, sig = 6) {
+// ---- God 62 PERSONAL (dari screenshot Input TradingView): MA Type ALMA, MA Period 2, Sigma 5, Offset 0.85, Delay 0,
+// TIMEFRAME 15 menit, Use Alternate Signals = ya, Multiplier = 8, Swing 10, Supply/Demand Box Width 2.5, trade BOTH.
+// Sumber script tidak bisa dibuka, jadi logika sinyal (ALMA close vs ALMA open pada TF alternatif) adalah DUGAAN dari input, bukan salinan.
+const G62 = { p: 2, sig: 5, off: 0.85, altMin: 120, swing: 10, box: 2.5, boxAtr: 50, srStr: 2, freshBuckets: 2 }; // altMin = 15 menit x 8
+function alma(a, p = G62.p, off = G62.off, sig = G62.sig) {
   const m = Math.floor(off * (p - 1)), s = p / sig, w = []; let ws = 0;
   for (let i = 0; i < p; i++) { const x = Math.exp(-((i - m) ** 2) / (2 * s * s)); w.push(x); ws += x; }
   return a.map((_, k) => k < p - 1 ? null : a.slice(k - p + 1, k + 1).reduce((t, v, i) => t + v * w[i], 0) / ws);
 }
-function pivots(v, len = 10) {
+
+// Gabung candle berurutan menjadi TF alternatif (bucket jam server). Bucket terakhir dibuang bila belum lengkap (non-repaint).
+function resampleAlt(v, mult) {
+  if (v.length < 3) return [];
+  const ep = x => Date.parse(String(x.t).replace(' ', 'T') + (String(x.t).length <= 16 ? ':00' : '') + 'Z') / 60000;
+  const ds = []; for (let i = 1; i < v.length; i++) { const d = ep(v[i]) - ep(v[i - 1]); if (d > 0) ds.push(d); }
+  ds.sort((a, b) => a - b); const base = ds[Math.floor(ds.length / 2)] || 15, B = base * mult, out = []; let cur = null;
+  for (const x of v) {
+    const k = Math.floor(ep(x) / B);
+    if (!cur || cur.k !== k) { cur = { k, t: x.t, o: x.o, h: x.h, l: x.l, c: x.c }; out.push(cur); }
+    else { cur.h = Math.max(cur.h, x.h); cur.l = Math.min(cur.l, x.l); cur.c = x.c; }
+  }
+  const lastEnd = ep(v[v.length - 1]) + base;
+  if (out.length && lastEnd % B !== 0) out.pop();
+  return out.map(x => ({ t: x.t, o: x.o, h: x.h, l: x.l, c: x.c, bucketMin: B }));
+}
+// Sinyal God 62 (dugaan): ALMA(close) memotong ALMA(open). Mengembalikan arah sekarang, apakah baru berbalik di bucket tutup terakhir, dan umurnya.
+function g62(v, altMin = G62.altMin) {
+  const ds = []; for (let i = 1; i < v.length; i++) { const d = (Date.parse(String(v[i].t).replace(' ', 'T') + ':00Z') - Date.parse(String(v[i - 1].t).replace(' ', 'T') + ':00Z')) / 60000; if (d > 0) ds.push(d); }
+  ds.sort((a, c) => a - c); const base = ds[Math.floor(ds.length / 2)] || 15;
+  const b = resampleAlt(v, Math.max(1, Math.round(altMin / base)));
+  if (b.length < G62.p + 3) return { state: null, flip: null, age: null, tfMin: null, t: null };
+  const aC = alma(b.map(x => x.c)), aO = alma(b.map(x => x.o)), st = [];
+  for (let i = 0; i < b.length; i++) st.push(aC[i] == null || aO[i] == null ? null : (aC[i] > aO[i] ? 'BUY' : aC[i] < aO[i] ? 'SELL' : null));
+  let n = st.length - 1; while (n > 0 && st[n] == null) n--;
+  const state = st[n]; let k = n; while (k > 0 && st[k - 1] === state) k--;
+  return { state, flip: k === n && k > 0 && st[k - 1] != null && st[k - 1] !== state ? state : null, age: n - k, tfMin: b[0].bucketMin, t: b[k].t };
+}
+function pivots(v, len = G62.swing) {
   const H = [], L = [];
   for (let i = len; i < v.length - len; i++) {
     const w = v.slice(i - len, i + len + 1);
@@ -143,29 +175,28 @@ const SL_MULT = 2, RR_MAX = 4; // SL = 2x jarak SL lama; TP dibatasi maks 1:4 (R
 function god(v1raw, v15, minRR = 3, tf = {}) {
   const v1 = v1raw.slice(0, -1);
   if (v1.length < 60 || v15.length < 50) throw new Error('Data H1/M15 kurang untuk acuan');
-  const c1 = v1.map(x => x.c), n = c1.length - 1, ref = c1[n], al = alma(c1), e20 = ema(c1, 20), e50 = ema(c1, 50);
+  const c1 = v1.map(x => x.c), n = c1.length - 1, ref = c1[n], e20 = ema(c1, 20), e50 = ema(c1, 50);
   // Arah tren H1 = EMA20 vs EMA50 (lambat). Dulu arah memakai harga vs ALMA(9) yang sangat cepat: begitu harga pullback ke zona, bias langsung berbalik
   // dan zona yang dituju berubah jadi zona arah sebaliknya, sehingga "harga di zona" dan "tren kuat" nyaris tidak pernah terjadi bersamaan.
-  const emaDir = e20[n] > e50[n] ? 'naik' : 'turun', trend = emaDir, kuat = trend === 'naik' ? ref > e50[n] : ref < e50[n];
-  const sideP = c1[n - 1] > al[n - 1], sideN = ref > al[n];
-  const h1signal = kuat && sideP !== sideN && (sideN ? trend === 'naik' : trend === 'turun') ? (sideN ? 'BUY' : 'SELL') : null;
-  const A1 = atr(v1), A15 = atr(v15), buy = trend === 'naik';
+  const gs = g62(v15); if (!gs.state) throw new Error('Data God 62 kurang (butuh beberapa candle TF alternatif)');
+  const h1signal = gs.flip, trend = gs.state === 'BUY' ? 'naik' : 'turun', kuat = true; // ARAH = sinyal God 62 (ALMA2 open/close, TF 15m x8), bukan EMA20/50
+  const A1 = atr(v1), A15 = atr(v15), ZB = atr(v1, G62.boxAtr) * (G62.box / 10), buy = trend === 'naik';
   const last = v15[v15.length - 1], price = last.c;
   const pv = pivots(v1, 10);
-  const ups = pv.H.filter(q => q.p > ref && !v1.slice(q.i + 1).some(x => x.h > q.p)).sort((a, b) => a.p - b.p);
-  const dns = pv.L.filter(q => q.p < ref && !v1.slice(q.i + 1).some(x => x.l < q.p)).sort((a, b) => b.p - a.p);
-  const supZ = ups[0] ? [ups[0].p - 0.5 * A1, ups[0].p] : null, demZ = dns[0] ? [dns[0].p, dns[0].p + 0.5 * A1] : null;
+  const ups = pv.H.filter(q => q.p > ref && !v1.slice(q.i + 1).some(x => x.c > q.p)).sort((a, b) => a.p - b.p);
+  const dns = pv.L.filter(q => q.p < ref && !v1.slice(q.i + 1).some(x => x.c < q.p)).sort((a, b) => b.p - a.p);
+  const supZ = ups[0] ? [ups[0].p - ZB, ups[0].p] : null, demZ = dns[0] ? [dns[0].p, dns[0].p + ZB] : null;
   let lo, hi, sl, tp1, tp2, basis;
   if (buy) {
     if (demZ) { lo = demZ[0]; hi = demZ[1]; basis = 'demand H1'; } else { hi = Math.min(e20[n], ref); lo = hi - 0.3 * A1; basis = 'pullback EMA20 H1'; }
     sl = lo - 0.3 * A1;
     tp1 = supZ ? supZ[0] : null;
-    tp2 = ups[1] ? ups[1].p - 0.5 * A1 : null;
+    tp2 = ups[1] ? ups[1].p - ZB : null;
   } else {
     if (supZ) { lo = supZ[0]; hi = supZ[1]; basis = 'supply H1'; } else { lo = Math.max(e20[n], ref); hi = lo + 0.3 * A1; basis = 'pullback EMA20 H1'; }
     sl = hi + 0.3 * A1;
     tp1 = demZ ? demZ[1] : null;
-    tp2 = dns[1] ? dns[1].p + 0.5 * A1 : null;
+    tp2 = dns[1] ? dns[1].p + ZB : null;
   }
   const entry = buy ? hi : lo; // limit di tepi zona yang pertama disentuh
   // SL diperlebar SL_MULT kali dari jarak SL lama (entry -> balik zona + buffer) agar tidak mudah tersapu.
@@ -189,10 +220,14 @@ function god(v1raw, v15, minRR = 3, tf = {}) {
   // ---- Syarat acuan (H1): inti = trend, zona, ruang/R:R, pasar aktif ----
   const zRow = buy ? dns[0] : ups[0];
   const fresh = !!zRow && (buy ? v1.slice(zRow.i + 1).every(x => x.l > demZ[1]) : v1.slice(zRow.i + 1).every(x => x.h < supZ[0]));
-  const pLo = pv.L, pHi = pv.H, R1 = rsi(c1);
+  const pLo = pv.L, pHi = pv.H;
+  // BOS searah (label BOS God 62): dalam 20 candle H1 terakhir ada CLOSE yang menembus swing (10) sebelumnya. S/R (strength 2): ada level S/R di/dekat zona.
+  const lastP = (arr, idx) => { const f = arr.filter(q => q.i <= idx); return f.length ? f[f.length - 1] : null; };
+  const bP = lastP(buy ? pv.H : pv.L, n - 20), bosH = !!bP && (buy ? Math.max(...c1.slice(-20)) > bP.p : Math.min(...c1.slice(-20)) < bP.p);
+  const sr2 = pivots(v1, G62.srStr), srOk = (buy ? sr2.L : sr2.H).some(q => q.p >= lo - ZB && q.p <= hi + ZB);
   const struktur = buy ? (pLo.length >= 2 && pLo[pLo.length - 1].p > pLo[pLo.length - 2].p) : (pHi.length >= 2 && pHi[pHi.length - 1].p < pHi[pHi.length - 2].p);
   const hchk = { trend: kuat, zona: !!zRow, ruang: rrRaw >= minRR && Math.abs(tpStruct - entry) >= 2 * A1, aktif: act(v1),
-    slope: buy ? e50[n] > e50[n - 5] : e50[n] < e50[n - 5], struktur, segar: fresh, rsi: buy ? R1 < 70 : R1 > 30 };
+    slope: bosH, struktur, segar: fresh, rsi: srOk };
   const hCore = hchk.trend && hchk.zona && hchk.ruang && hchk.aktif;
   const hOpt = [hchk.slope, hchk.struktur, hchk.segar, hchk.rsi].filter(Boolean).length;
   const hOk = Object.values(hchk).filter(Boolean).length, layak = hCore && hOpt >= 2;
@@ -221,9 +256,13 @@ function god(v1raw, v15, minRR = 3, tf = {}) {
   if (pRw > RR_MAX * pRisk) { pRw = RR_MAX * pRisk; pTp = buy ? pE + pRw : pE - pRw; }
   const pRr = pRw > 0 ? +(pRw / pRisk).toFixed(2) : 0;
   // EMA M15: searah tren H1, ATAU harga sudah merebut EMA9 M15 searah plan (momen balik arah setelah pullback; EMA20/50 yang lambat masih sempat melawan).
-  const m9 = ema(cl15, 9), emaOk = (buy ? ltfTrend === 'naik' : ltfTrend === 'turun') || (buy ? last.c > m9[ln] : last.c < m9[ln]);
-  const chk = { zone: inZone, conf: strong, rr: ((inZone && strong) ? rrS : Math.max(rr, pRr)) >= minRR, vol: act(v15), choch,
-    ema: emaOk, rsi: buy ? (R15 < 70 && R15 >= R15b) : (R15 > 30 && R15 <= R15b) };
+  const gAlign = gs.state === (buy ? 'BUY' : 'SELL'), gConf = gAlign && gs.age != null && gs.age <= G62.freshBuckets; // sinyal God 62 searah baru berbalik (<= 2 bucket 2 jam)
+  const bm = (() => { const pp = pivots(v15, G62.swing), f = (buy ? pp.H : pp.L).filter(q => q.i <= ln - 9); return f.length ? f[f.length - 1] : null; })();
+  const bosM = !!bm && (buy ? Math.max(...cl15.slice(-8)) > bm.p : Math.min(...cl15.slice(-8)) < bm.p); // BOS M15: close menembus swing (10)
+  const barOk = (() => { const a = alma(cl15), o = alma(v15.map(x => x.o)); return a[ln] != null && (buy ? a[ln] > o[ln] : a[ln] < o[ln]); })(); // warna bar God 62 pada candle M15 sendiri
+  const sr15 = pivots(v15.slice(-60), G62.srStr), srM = (buy ? sr15.L : sr15.H).some(q => Math.abs(q.p - price) <= A15); // level S/R (strength 2) dekat harga
+  const chk = { zone: inZone, conf: gConf, rr: ((inZone && gConf) ? rrS : Math.max(rr, pRr)) >= minRR, vol: act(v15), choch: bosM,
+    ema: barOk, rsi: srM };
   const mCore = chk.zone && chk.conf && chk.rr && chk.vol, mOk = Object.values(chk).filter(Boolean).length;
   const m15Min = +(tf.m15Min) || 6, deadNow = buy ? price <= sl : price >= sl;
   if (mOk >= m15Min && !deadNow) { mEntry = price; mSl = slT; mTp = tpT; mRr = +(rwT / rkT).toFixed(2); }
@@ -235,10 +274,10 @@ function god(v1raw, v15, minRR = 3, tf = {}) {
   else status = dist <= 0.5 ? 'DEKAT ENTRY' : 'MENUNGGU';
   const sT = kuat ? 100 : 50, sP = Math.min(100, Math.round(rrRaw / minRR * 100));
   const d = price > 100 ? 2 : 5, f = x => +x.toFixed(d), zz = q => q && q.map(f);
-  return { trend, kuat, h1signal, h1time: v1[n].t, dir: buy ? 'BUY' : 'SELL', basis, htf: tf.h || '1h', ltf: tf.l || '15min', h: { chk: hchk, ok: hOk, total: 8, core: hCore, layak }, grade,
+  return { trend, kuat, h1signal, h1time: gs.flip ? gs.t : v1[n].t, g62: { state: gs.state, flip: gs.flip, age: gs.age, tfMin: gs.tfMin, aligned: gAlign, conf: gConf }, dir: buy ? 'BUY' : 'SELL', basis, htf: tf.h || '1h', ltf: tf.l || '15min', h: { chk: hchk, ok: hOk, total: 8, core: hCore, layak }, grade,
     m: { preview: mEntry !== null ? null : { entry: f(price), sl: f(slT), tp: f(tpT), rr: +(rwT / rkT).toFixed(2), basis: tpBasis }, tpBasis: mEntry === null ? null : tpBasis, trend: ltfTrend, rsi: +R15.toFixed(1), atr: +A15.toPrecision(3), chk, ok: mOk, total: 7, core: mCore, entry: mEntry === null ? null : f(mEntry), sl: mSl === null ? null : f(mSl), tp: mTp === null ? null : f(mTp), rr: mRr,
       plan: { entry: f(pE), sl: f(pSl), tp: f(pTp), rr: pRr, armed: mEntry !== null } }, entry: f(entry), entryLo: f(lo), entryHi: f(hi), sl: f(sl),
     tp1: f(tp1), tp2: tp2 === null ? null : f(tp2), tp: f(tp1), rr, minRR, status, dist, trig: status === 'SIAP ENTRY',
     supply: zz(supZ), demand: zz(demZ), skorTrend: sT, skorPotensi: sP, skor, entryEligible, planEligible: skor >= 70 };
 }
-module.exports = { candles, scan, validate, god, auth, owner, view, res, setStore, blobs, ingest, exName, pickSource };
+module.exports = { G62, g62, resampleAlt, alma, ema, atr, rsi, pivots, candles, scan, validate, god, auth, owner, view, res, setStore, blobs, ingest, exName, pickSource };

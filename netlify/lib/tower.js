@@ -433,7 +433,7 @@ async function runOnceInner(store, manual, mt5) {
       }
       if (g.h.ok >= 7 && !(prev.hOk >= 7))
         await mail(st, cfg, 'H', `📊 ${sym} ${g.dir}: ${g.htf} ${g.h.ok}/8 syarat terpenuhi`, [['Simbol', sym], ['Arah', g.dir], ['Syarat acuan', g.h.ok + '/8'], ['Layak pantau', g.h.layak ? 'ya' : 'belum'], ['Entry limit', g.entry], ['SL', g.sl], ['TP1', g.tp1], ['R:R', '1:' + g.rr], ['Status', g.status]]);
-      const mk = g.m.ok, NM = { zone: 'harga di zona', conf: 'konfirmasi kuat', rr: 'R:R', vol: 'volatilitas', choch: 'struktur mikro', ema: 'EMA searah', rsi: 'RSI/momentum' };
+      const mk = g.m.ok, NM = { zone: 'harga di zona', conf: 'sinyal God 62 baru', rr: 'R:R', vol: 'volatilitas', choch: 'BOS M15', ema: 'warna bar God 62', rsi: 'level S/R' };
       const kurang = Object.entries(g.m.chk).filter(([, x]) => !x).map(([k]) => NM[k]).join(', ') || '-';
       const lv = mk >= 7 && !(prev.mOk >= 7) ? 7 : mk >= 6 && !(prev.mOk >= 6) ? 6 : 0;
       if (lv) await mail(st, cfg, 'Mn', `${lv === 7 ? '🔥' : '📈'} ${sym} ${g.dir}: entry ${g.ltf} ${mk}/7 syarat`, [['Simbol', sym], ['Arah', g.dir], ['Syarat entry', mk + '/7'], ['Belum terpenuhi', kurang], ['Acuan ' + g.htf, g.h.ok + '/8 (layak ' + (g.h.layak ? 'ya' : 'belum') + ')'], ['Status', g.status], ['Entry limit', g.entry], ['SL', g.sl], ['TP1', g.tp1], ['R:R', '1:' + g.rr]]);
