@@ -9,13 +9,13 @@ export default async req => {
     const c=await store.get('command_current',{type:'json'}).catch(()=>null);
     if(!c || c.status!=='PENDING' || Date.now()>c.expiresAt) return text('NONE');
     const kl=await store.get('auto_kill',{type:'json'}).catch(()=>null);
-    const isCancel=c.side==='CANCEL'; // pembatalan selalu boleh walau kill switch aktif (hanya mengurangi risiko)
+    const isCancel=c.side==='CANCEL'||c.side==='CLOSE'; // pembatalan selalu boleh walau kill switch aktif (hanya mengurangi risiko)
     if(kl && kl.on && !isCancel){ c.status='BLOCKED'; c.message='Kill switch aktif'; await store.setJSON('command_current',c); return text('NONE'); }
     const account=await store.get('account_report',{type:'json'}).catch(()=>null);
     if(!account || Date.now()-account.receivedAt>60000 || account.connected!==true) { c.status='BLOCKED'; c.message='MT5 tidak terhubung atau laporan akun tidak segar'; await store.setJSON('command_current',c); return text('NONE'); }
     if(!isCancel && account.tradeMode!=='DEMO' && process.env.MT5_ALLOW_LIVE!=='true') { c.status='BLOCKED'; c.message='Akun bukan DEMO; server live gate tertutup'; await store.setJSON('command_current',c); return text('NONE'); }
     // Pipe-delimited protocol keeps the MQL5 bridge dependency-free.
-    if(isCancel) return text([c.id,c.symbol,'CANCEL',c.ticket||0,0,0,0,'C'].join('|'));
+    if(isCancel) return text([c.id,c.symbol,c.side,c.ticket||0,0,0,0,c.side==='CLOSE'?'X':'C'].join('|'));
     return text([c.id,c.symbol,c.side,c.entry,c.sl,c.tp,c.riskPct,(c.mode==='market'?'M':c.mode==='plan'?'P':'N')+(c.slMode?'S':'')].join('|'));
   }
   if(req.method==='POST') {

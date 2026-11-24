@@ -159,7 +159,7 @@ function judge(st, a = {}) {
   const net = H.map(x => (+x.R || 0) - cost), n = net.length, sum = v => v.reduce((q, x) => q + x, 0);
   const avg = n ? sum(net) / n : 0, gp = sum(net.filter(x => x > 0)), gl = -sum(net.filter(x => x < 0)), pf = gl > 0 ? gp / gl : (gp > 0 ? 99 : 0);
   let cum = 0, pk = 0, dd = 0; net.forEach(x => { cum += x; pk = Math.max(pk, cum); dd = Math.max(dd, pk - cum); });
-  const best = n ? Math.max(...net) : 0, avgEx = n > 1 ? (sum(net) - best) / (n - 1) : 0, wins = H.filter(x => x.res === 'TP').length, dn = H.filter(x => x.res === 'TP' || x.res === 'SL').length;
+  const best = n ? Math.max(...net) : 0, avgEx = n > 1 ? (sum(net) - best) / (n - 1) : 0, wins = H.filter(x => x.res === 'TP' || (x.res === 'G62' && x.R > 0)).length, dn = H.filter(x => x.res === 'TP' || x.res === 'SL' || x.res === 'G62').length;
   const props = [
     { k: 'data', label: `Cukup trade teruji (${n}/${N})`, pass: n >= N },
     { k: 'exp', label: `Ekspektasi positif setelah biaya (${avg.toFixed(2)}R per trade)`, pass: n > 0 && avg > 0 },
@@ -272,6 +272,17 @@ async function sendCancel(mt5, o, why) {
   await mt5.setJSON('command_current', { id, symbol: o.symbol, side: 'CANCEL', ticket: o.ticket || 0, status: 'PENDING', createdAt: Date.now(), expiresAt: Date.now() + 120000, source: 'analyst-real', reason: String(why).slice(0, 120) });
   return { ok: true, id };
 }
+// Kirim perintah TUTUP posisi terbuka milik EA untuk satu simbol (sinyal God 62 berbalik). Hanya mengurangi risiko.
+async function sendClose(mt5, o, why) {
+  if (process.env.MT5_ORDERS_ENABLED !== 'true') return { ok: false, msg: 'MT5_ORDERS_ENABLED belum true' };
+  const acc = await mt5.get('account_report', { type: 'json' }).catch(() => null);
+  if (!acc || acc.connected !== true || Date.now() - acc.receivedAt > 60000) return { ok: false, msg: 'MT5 tidak terhubung / laporan basi' };
+  const cur = await mt5.get('command_current', { type: 'json' }).catch(() => null);
+  if (cur && cur.status === 'PENDING' && Date.now() - cur.createdAt < 120000) return { ok: false, msg: 'masih ada perintah belum diakui EA' };
+  const id = require('crypto').randomUUID();
+  await mt5.setJSON('command_current', { id, symbol: o.symbol, side: 'CLOSE', ticket: o.ticket || 0, status: 'PENDING', createdAt: Date.now(), expiresAt: Date.now() + 120000, source: 'god62-exit', reason: String(why).slice(0, 120) });
+  return { ok: true, id };
+}
 // ANALYST REAL: mencocokkan order real/virtual dengan plan terbaru. Plan berubah -> batalkan order lama, lalu plan baru dipasang otomatis oleh jalur eksekusi biasa.
 async function realAnalyst(mt5, st, cfg, g, sym, price) {
   const a = { ...AUTO, ...(cfg.auto || {}) };
@@ -290,6 +301,12 @@ async function realAnalyst(mt5, st, cfg, g, sym, price) {
       if (['CANCELLED', 'DRYRUN'].includes(ack.status)) { drop(`order lama dibatalkan di MT5 (${ack.message || ack.status})`, true); return; }
       ev(st, 'ANA', sym, `[REAL] pembatalan gagal (${ack.status}): ${ack.message || ''}; dicoba lagi`); o.cancelId = null; o.status = 'PENDING_MT5';
     }
+    if (o.closeId && ack && ack.id === o.closeId) {
+      if (ack.status === 'CLOSED') ev(st, 'EXE', sym, `[REAL] EA menutup posisi (${ack.message || ack.status})`);
+      else if (ack.status === 'DRYRUN') ev(st, 'ANA', sym, `[REAL] EA masih DryRun: posisi TIDAK ditutup (${ack.message || ''})`);
+      else ev(st, 'ANA', sym, `[REAL] penutupan posisi gagal (${ack.status}): ${ack.message || ''}; dicoba lagi`);
+      o.closeId = null;
+    }
     const accOk = acc && Date.now() - acc.receivedAt < 60000 && Array.isArray(acc.orders);
     if (accOk && ['PENDING_MT5', 'TERISI'].includes(o.status)) {
       const hasOrd = acc.orders.some(x => o.ticket ? String(x.tk) === String(o.ticket) : (x.s === o.symbol && x.side === o.side)), pos = (acc.positions || []).find(x => x.s === o.symbol);
@@ -299,6 +316,15 @@ async function realAnalyst(mt5, st, cfg, g, sym, price) {
     }
     if (o.status === 'QUEUED' && Date.now() - o.t > 180000) { drop('tidak ada konfirmasi EA >3 menit; order dianggap tidak terkirim', false); return; }
     if (o.status === 'CANCEL_QUEUED') { if (Date.now() - (o.cancelAt || 0) > 180000) { o.status = 'PENDING_MT5'; o.cancelId = null; ev(st, 'ANA', sym, '[REAL] tidak ada konfirmasi pembatalan dari EA; akan dicoba lagi'); } else return; }
+  }
+  // Posisi sudah terisi: keluar saat sinyal God 62 berlawanan dengan arah posisi (diulang tiap 10 menit bila belum tertutup).
+  if (o.status === 'TERISI' && EXIT_G62() && !o.dry && mt5 && g.dir !== o.side) {
+    if (!o.closeAt || Date.now() - o.closeAt > 600000) {
+      const r = await sendClose(mt5, o, `sinyal God 62 berbalik ${o.side}→${g.dir}`);
+      if (r.ok) { o.closeId = r.id; o.closeAt = Date.now(); ev(st, 'ANA', sym, `[REAL] sinyal God 62 berbalik ${o.side}→${g.dir}: perintah TUTUP posisi dikirim ke MT5`); }
+      else if (o.lastWhy !== r.msg) { o.lastWhy = r.msg; ev(st, 'ANA', sym, `[REAL] sinyal God 62 berbalik tapi penutupan tertunda: ${r.msg}`); }
+    }
+    return;
   }
   if (o.status === 'TERISI') return;
   if (a.revise === false) return;
@@ -337,6 +363,7 @@ async function runOnce(store, manual, mt5) {
   await store.setJSON('run_lock', { t: Date.now() }).catch(() => null);
   try { return await runOnceInner(store, manual, mt5); } finally { await store.setJSON('run_lock', { t: 0 }).catch(() => null); }
 }
+const EXIT_G62 = () => process.env.EXIT_G62 !== 'false'; // posisi ditutup saat sinyal God 62 berlawanan (stop-and-reverse)
 async function runOnceInner(store, manual, mt5) {
   core.setStore(store);
   const cfg = effCfg(await getCfg(store)), st = await getState(store, cfg);
@@ -382,7 +409,8 @@ async function runOnceInner(store, manual, mt5) {
           else { if (x.h >= p.sl) { res = 'SL'; break; } if (x.l <= p.tp1) { res = 'TP'; break; } }
         }
         p.lastT = lastT;
-        if (!res && p.bars >= 96) res = 'TIMEOUT';
+        if (!res && EXIT_G62() && g.g62 && g.g62.state && (p.dir === 'BUY') !== (g.g62.state === 'BUY')) res = 'G62'; // keluar di harga candle tutup terakhir
+        if (!res && p.bars >= (EXIT_G62() ? 1000 : 96)) res = 'TIMEOUT';
         if (res) {
           const risk = Math.abs(p.entry - p.sl) || 1e-9, px = res === 'TP' ? p.tp1 : res === 'SL' ? p.sl : price;
           const R = +(((p.dir === 'BUY' ? px - p.entry : p.entry - px)) / risk).toFixed(2);
@@ -391,7 +419,7 @@ async function runOnceInner(store, manual, mt5) {
           st.positions = st.positions.filter(x => x !== p);
           if (st.go) delete st.go[sym + '|paper']; if (st.locks) delete st.locks[sym]; // posisi selesai: boleh masuk lagi di plan yang sama bila syarat M15 terpenuhi lagi
           ev(st, 'RSK', sym, `posisi ${p.dir} ditutup ${res} @${px} (${R > 0 ? '+' : ''}${R}R · ${idr(pnl)} · saldo ${idr(st.balance)})`);
-          await mail(st, cfg, 'Pos', `${res === 'TP' ? '✅' : res === 'SL' ? '❌' : '⏱'} ${sym} ${p.dir} kena ${res} (${R}R)`, [['Simbol', sym], ['Arah', p.dir], ['Entry', p.entry], ['SL', p.sl], ['TP1', p.tp1], ['Keluar', px], ['Hasil', R + 'R (' + idr(pnl) + ')'], ['Saldo', idr(st.balance)]]);
+          await mail(st, cfg, 'Pos', `${res === 'TP' ? '✅' : res === 'SL' ? '❌' : res === 'G62' ? '🔁' : '⏱'} ${sym} ${p.dir} ${res === 'G62' ? 'ditutup sinyal God 62 berbalik' : 'kena ' + res} (${R}R)`, [['Simbol', sym], ['Arah', p.dir], ['Entry', p.entry], ['SL', p.sl], ['TP1', p.tp1], ['Keluar', px], ['Hasil', R + 'R (' + idr(pnl) + ')'], ['Saldo', idr(st.balance)]]);
         } else ev(st, 'RSK', sym, `pantau posisi ${p.dir}: harga ${price}, SL ${p.sl}, TP ${p.tp1}`);
       }
       // KUNCI ENTRY M15: begitu syarat M15 terpenuhi, entry/SL/TP dikunci dan DIBIARKAN TERBUKA sampai ada plan H1 baru, kena SL/TP, atau arah berbalik.

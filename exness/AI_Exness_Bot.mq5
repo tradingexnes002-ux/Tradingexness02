@@ -4,7 +4,7 @@
 //| Orders are NEVER sent unless EnableExecution=true.                |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.61"
+#property version "1.70"
 #property description "AI Exness Bot - controlled execution bridge; demo-only by default"
 
 #include <Trade/Trade.mqh>
@@ -140,6 +140,28 @@ void ProcessCancel(const string id,const string symbol,const ulong ticket)
    Ack(id,(done==found?"CANCELLED":"FAILED"),"",IntegerToString(done)+"/"+IntegerToString(found)+" pending order dihapus");
 }
 
+// Menutup POSISI terbuka milik EA (magic number sama) untuk satu simbol, dipakai saat sinyal God 62 berbalik. Tidak pernah membuka order baru; aman diulang.
+void ProcessClose(const string id,const string symbol)
+{
+   if(!EnableExecution){ Ack(id,"BLOCKED","","EA EnableExecution=false"); return; }
+   long mode=AccountInfoInteger(ACCOUNT_TRADE_MODE);
+   if(!AllowLiveAccount && mode!=ACCOUNT_TRADE_MODE_DEMO){ Ack(id,"BLOCKED","","Akun bukan DEMO; AllowLiveAccount=false"); return; }
+   if(!DryRun && (!TerminalInfoInteger(TERMINAL_CONNECTED) || !MQLInfoInteger(MQL_TRADE_ALLOWED) || !TerminalInfoInteger(TERMINAL_TRADE_ALLOWED))){ Ack(id,"BLOCKED","","Terminal/koneksi/Algo Trading tidak mengizinkan trading"); return; }
+   int found=0,done=0;
+   trade.SetExpertMagicNumber(MagicNumber); trade.SetDeviationInPoints(DeviationPoints); trade.SetTypeFillingBySymbol(symbol);
+   for(int j=PositionsTotal()-1;j>=0;j--)
+   {
+      ulong t=PositionGetTicket(j); if(t==0) continue;
+      if(PositionGetInteger(POSITION_MAGIC)!=MagicNumber || PositionGetString(POSITION_SYMBOL)!=symbol) continue;
+      found++;
+      if(DryRun) continue;
+      if(trade.PositionClose(t)) done++;
+   }
+   if(DryRun){ Ack(id,"DRYRUN","","Penutupan tervalidasi: "+IntegerToString(found)+" posisi akan ditutup (DryRun=true, tidak ditutup)"); return; }
+   if(found==0){ Ack(id,"CLOSED","","Tidak ada posisi terbuka (sudah selesai)"); return; }
+   Ack(id,(done==found?"CLOSED":"FAILED"),"",IntegerToString(done)+"/"+IntegerToString(found)+" posisi ditutup");
+}
+
 void ProcessCommand(const string line)
 {
    string p[]; int n=StringSplit(line,'|',p);
@@ -149,6 +171,7 @@ void ProcessCommand(const string line)
    string id=Trim(p[0]), symbol=Trim(p[1]), side=Trim(p[2]);
    double entry=StringToDouble(p[3]), sl=StringToDouble(p[4]), tp=StringToDouble(p[5]), riskPct=StringToDouble(p[6]);
    if(id!="" && symbol!="" && side=="CANCEL"){ ProcessCancel(id,symbol,(ulong)StringToInteger(p[3])); return; }
+   if(id!="" && symbol!="" && side=="CLOSE"){ ProcessClose(id,symbol); return; }
    if(id=="" || symbol=="" || (side!="BUY" && side!="SELL")){ Print("Command invalid: ",line); return; }
    if(!EnableExecution){ Ack(id,"BLOCKED","","EA EnableExecution=false"); return; }
    long mode=AccountInfoInteger(ACCOUNT_TRADE_MODE);

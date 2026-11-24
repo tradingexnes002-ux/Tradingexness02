@@ -4,7 +4,8 @@
 // Hasil dibandingkan: A = acuan H1 + entry M15, B = acuan H4 + entry H1, plus pembanding God 62 murni (reversal).
 const fs = require('fs'), core = require('../netlify/lib/core.js');
 const arg = Object.fromEntries(process.argv.slice(3).map(x => x.replace(/^--/, '').split('=')));
-const RR = +(arg.rr || 3), M15MIN = +(arg.m15min || 6), COST = +(arg.cost || 0.1), TIMEOUT = +(arg.timeout || 96);
+if (arg.exit === 'tp') process.env.EXIT_G62 = 'false'; // --exit=tp: pakai TP zona (rumus lama). Default: keluar saat sinyal God 62 berlawanan
+const EXIT = process.env.EXIT_G62 !== 'false', RR = +(arg.rr || 3), M15MIN = +(arg.m15min || 6), COST = +(arg.cost || 0.1), TIMEOUT = +(arg.timeout || 96);
 function load(f) {
   const out = [];
   for (const ln of fs.readFileSync(f, 'utf8').split(/\r?\n/)) {
@@ -24,6 +25,9 @@ function run(m15, accMult, entMult, req) {
   process.env.G62_REQUIRED = req ? 'true' : 'false';
   const acc = core.resampleAlt(m15, accMult), ent = entMult === 1 ? m15 : core.resampleAlt(m15, entMult);
   const base = 15, accEnd = acc.map(x => ep(x.t) + base * accMult), entEnd = ent.map(x => ep(x.t) + base * entMult);
+  // status sinyal God 62 pada akhir tiap bucket 2 jam (kunci = waktu akhir bucket, menit epoch)
+  const gb = core.resampleAlt(m15, 8), gC = core.alma(gb.map(x => x.c)), gO = core.alma(gb.map(x => x.o)), gMap = new Map();
+  gb.forEach((x, k) => { if (gC[k] != null && gO[k] != null) gMap.set(ep(x.t) + 120, gC[k] > gO[k] ? 'BUY' : gC[k] < gO[k] ? 'SELL' : null); });
   const m15t = m15.map(x => ep(x.t)); const trades = []; let ai = 0, mi = 0, busyUntil = -1; const used = new Set();
   for (let i = 0; i < ent.length; i++) {
     const now = entEnd[i]; if (now <= busyUntil) continue;
@@ -37,10 +41,13 @@ function run(m15, accMult, entMult, req) {
     const buy = g.dir === 'BUY', en = g.m.entry, sl = g.m.sl, tp = g.m.tp != null ? g.m.tp : g.tp1, risk = Math.abs(en - sl); if (!(risk > 0)) continue;
     while (mi < m15.length && m15t[mi] + base <= now) mi++;
     let R = null, n = 0, ex = null;
-    for (let j = mi; j < m15.length && n < TIMEOUT * Math.max(1, entMult); j++, n++) {
+    const maxBars = EXIT ? 1500 : TIMEOUT * Math.max(1, entMult);
+    for (let j = mi; j < m15.length && n < maxBars; j++, n++) {
       const x = m15[j], hitSl = buy ? x.l <= sl : x.h >= sl, hitTp = buy ? x.h >= tp : x.l <= tp;
       if (hitSl) { R = -1; ex = 'SL'; break; } if (hitTp) { R = Math.abs(tp - en) / risk; ex = 'TP'; break; }
-      if (n === TIMEOUT * Math.max(1, entMult) - 1) { R = (buy ? x.c - en : en - x.c) / risk; ex = 'TO'; }
+      const gs = EXIT ? gMap.get(m15t[j] + base) : null;
+      if (gs && gs !== (buy ? 'BUY' : 'SELL')) { R = (buy ? x.c - en : en - x.c) / risk; ex = 'G62'; break; }
+      if (n === maxBars - 1) { R = (buy ? x.c - en : en - x.c) / risk; ex = 'TO'; }
     }
     if (R == null) continue;
     busyUntil = now + (n + 1) * base; R -= COST; trades.push({ t: ent[i].t, dir: g.dir, R, ex, g62: g.g62 && g.g62.aligned });
@@ -51,12 +58,12 @@ function stat(tr) {
   if (!tr.length) return { n: 0 };
   const w = tr.filter(x => x.R > 0), l = tr.filter(x => x.R <= 0), sw = w.reduce((a, b) => a + b.R, 0), sl = -l.reduce((a, b) => a + b.R, 0);
   let eq = 0, pk = 0, dd = 0; tr.forEach(x => { eq += x.R; pk = Math.max(pk, eq); dd = Math.max(dd, pk - eq); });
-  return { n: tr.length, winrate: +(100 * w.length / tr.length).toFixed(1) + '%', expectancyR: +(eq / tr.length).toFixed(3), profitFactor: sl ? +(sw / sl).toFixed(2) : null, totalR: +eq.toFixed(1), maxDD_R: +dd.toFixed(1), TP: tr.filter(x => x.ex === 'TP').length, SL: tr.filter(x => x.ex === 'SL').length, timeout: tr.filter(x => x.ex === 'TO').length, aligned_with_G62: tr.filter(x => x.g62).length };
+  return { n: tr.length, winrate: +(100 * w.length / tr.length).toFixed(1) + '%', expectancyR: +(eq / tr.length).toFixed(3), profitFactor: sl ? +(sw / sl).toFixed(2) : null, totalR: +eq.toFixed(1), maxDD_R: +dd.toFixed(1), TP: tr.filter(x => x.ex === 'TP').length, SL: tr.filter(x => x.ex === 'SL').length, keluar_G62: tr.filter(x => x.ex === 'G62').length, timeout: tr.filter(x => x.ex === 'TO').length, aligned_with_G62: tr.filter(x => x.g62).length };
 }
 if (require.main === module) {
   let m15 = load(process.argv[2] || ''); if (arg.from) m15 = m15.filter(x => x.t >= arg.from);
   if (m15.length < 2000) { console.log('Data kurang (' + m15.length + ' candle M15). Perlu minimal beberapa bulan.'); process.exit(1); }
-  console.log(`Data: ${m15.length} candle M15, ${m15[0].t} s/d ${m15[m15.length - 1].t}. RR min ${RR}, M15 min ${M15MIN}/7, biaya ${COST}R/trade.`);
+  console.log(`Keluar: ${EXIT ? 'sinyal God 62 berlawanan (TP jauh sebagai pengaman)' : 'TP zona'}. Data: ${m15.length} candle M15, ${m15[0].t} s/d ${m15[m15.length - 1].t}. RR min ${RR}, M15 min ${M15MIN}/7, biaya ${COST}R/trade.`);
   for (const [name, am, em] of [['A  acuan H1 + entry M15', 4, 1], ['B  acuan H4 + entry H1', 16, 4]])
     console.log(name.padEnd(26), JSON.stringify(stat(run(m15, am, em, false))));
   // Pembanding: God 62 murni (dugaan) = stop-and-reverse pada tiap pembalikan sinyal TF 2 jam, tanpa SL/TP, hasil dalam persen harga.

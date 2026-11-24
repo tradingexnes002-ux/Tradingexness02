@@ -237,3 +237,11 @@ Sumber script tidak bisa dibuka; dasarnya INPUT dari screenshot (ALMA 2/5/0.85, 
 - M15 (7): harga di zona H1, sinyal God 62 searah baru berbalik (maks 2 bucket), R:R, volatilitas, BOS M15, warna bar God 62 M15, level S/R dekat harga.
 - Jumlah syarat tetap 8 dan 7 agar ambang N/7, kelas syarat, dan UI tetap jalan. Konstanta ada di `G62` pada core.js.
 - `node tools/backtest.js data_M15.csv` membandingkan acuan H1 + entry M15 dengan acuan H4 + entry H1 dan pembanding God 62 murni. Perlu data MT5 asli.
+
+### v14l: keluar mengikuti God 62 (stop-and-reverse)
+- God 62 memakai Initial SL = 0 dan Initial TP = 0; posisi ditutup saat sinyal berlawanan muncul. Aplikasi sekarang meniru ini (env `EXIT_G62`, default aktif; isi `false` untuk kembali ke TP zona).
+- Paper: posisi ditutup di harga candle tutup saat arah God 62 berbalik (hasil bertanda `G62`). Batas waktu 96 candle dinonaktifkan (pengaman 1000 candle). Win rate menghitung keluar G62 sebagai menang bila R > 0.
+- Real: server mengirim perintah `CLOSE` ke EA saat arah berbalik (diulang tiap 10 menit bila belum tertutup). Pending order yang belum terisi tetap dibatalkan saat arah berbalik (jalur lama).
+- SL tetap pelindung di balik zona (rumus lama, pelebaran 2x). EA mewajibkan TP, jadi TP dipasang jauh = `G62_TP_FAR_R` x jarak SL (default 10) sebagai pengaman. Level TP zona asli ada di `tpRef` dan tetap dipakai untuk R:R, jadi angka R:R di dashboard adalah ke zona, bukan ke TP jauh.
+- EA v1.70 (WAJIB dipasang ulang dan di-compile): perintah CLOSE menutup posisi bermagic number EA untuk simbol itu. Dengan `DryRun=true` hanya validasi. Kode EA belum dikompilasi/diuji di MT5 oleh penyusun paket ini.
+- `node tools/backtest.js data.csv` mengikuti aturan keluar ini; `--exit=tp` untuk membandingkan dengan TP zona.

@@ -274,10 +274,14 @@ function god(v1raw, v15, minRR = 3, tf = {}) {
   else status = dist <= 0.5 ? 'DEKAT ENTRY' : 'MENUNGGU';
   const sT = kuat ? 100 : 50, sP = Math.min(100, Math.round(rrRaw / minRR * 100));
   const d = price > 100 ? 2 : 5, f = x => +x.toFixed(d), zz = q => q && q.map(f);
-  return { trend, kuat, h1signal, h1time: gs.flip ? gs.t : v1[n].t, g62: { state: gs.state, flip: gs.flip, age: gs.age, tfMin: gs.tfMin, aligned: gAlign, conf: gConf }, dir: buy ? 'BUY' : 'SELL', basis, htf: tf.h || '1h', ltf: tf.l || '15min', h: { chk: hchk, ok: hOk, total: 8, core: hCore, layak }, grade,
-    m: { preview: mEntry !== null ? null : { entry: f(price), sl: f(slT), tp: f(tpT), rr: +(rwT / rkT).toFixed(2), basis: tpBasis }, tpBasis: mEntry === null ? null : tpBasis, trend: ltfTrend, rsi: +R15.toFixed(1), atr: +A15.toPrecision(3), chk, ok: mOk, total: 7, core: mCore, entry: mEntry === null ? null : f(mEntry), sl: mSl === null ? null : f(mSl), tp: mTp === null ? null : f(mTp), rr: mRr,
-      plan: { entry: f(pE), sl: f(pSl), tp: f(pTp), rr: pRr, armed: mEntry !== null } }, entry: f(entry), entryLo: f(lo), entryHi: f(hi), sl: f(sl),
-    tp1: f(tp1), tp2: tp2 === null ? null : f(tp2), tp: f(tp1), rr, minRR, status, dist, trig: status === 'SIAP ENTRY',
+  // KELUAR = sinyal God 62 berlawanan (Initial SL/TP God 62 = 0). EA mewajibkan TP, jadi TP dipasang jauh (G62_TP_FAR_R x jarak SL, default 10) sebagai pengaman; level zona asli tetap di tpRef dan dipakai untuk R:R.
+  const EXIT = process.env.EXIT_G62 !== 'false', FARR = +(process.env.G62_TP_FAR_R) || 10;
+  const far = (e, s) => e == null || s == null ? null : (buy ? e + FARR * Math.abs(e - s) : e - FARR * Math.abs(e - s));
+  const tpOut = EXIT ? far(entry, sl) : tp1, mTpOut = mTp === null ? null : (EXIT ? far(mEntry, mSl) : mTp), pTpOut = EXIT ? far(pE, pSl) : pTp, tpTOut = EXIT ? far(price, slT) : tpT;
+  return { exitMode: EXIT ? 'G62' : 'TP', trend, kuat, h1signal, h1time: gs.flip ? gs.t : v1[n].t, g62: { state: gs.state, flip: gs.flip, age: gs.age, tfMin: gs.tfMin, aligned: gAlign, conf: gConf }, dir: buy ? 'BUY' : 'SELL', basis, htf: tf.h || '1h', ltf: tf.l || '15min', h: { chk: hchk, ok: hOk, total: 8, core: hCore, layak }, grade,
+    m: { preview: mEntry !== null ? null : { entry: f(price), sl: f(slT), tp: f(tpTOut), rr: +(rwT / rkT).toFixed(2), basis: tpBasis }, tpBasis: mEntry === null ? null : tpBasis, trend: ltfTrend, rsi: +R15.toFixed(1), atr: +A15.toPrecision(3), chk, ok: mOk, total: 7, core: mCore, entry: mEntry === null ? null : f(mEntry), sl: mSl === null ? null : f(mSl), tp: mTpOut === null ? null : f(mTpOut), rr: mRr,
+      plan: { entry: f(pE), sl: f(pSl), tp: f(pTpOut), rr: pRr, armed: mEntry !== null } }, entry: f(entry), entryLo: f(lo), entryHi: f(hi), sl: f(sl),
+    tp1: f(tpOut), tp2: EXIT || tp2 === null ? null : f(tp2), tp: f(tpOut), tpRef: f(tp1), rr, minRR, status, dist, trig: status === 'SIAP ENTRY',
     supply: zz(supZ), demand: zz(demZ), skorTrend: sT, skorPotensi: sP, skor, entryEligible, planEligible: skor >= 70 };
 }
 module.exports = { G62, g62, resampleAlt, alma, ema, atr, rsi, pivots, candles, scan, validate, god, auth, owner, view, res, setStore, blobs, ingest, exName, pickSource };
