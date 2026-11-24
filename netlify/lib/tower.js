@@ -77,17 +77,34 @@ async function htfData(store, sym, htf, src) {
   await store.setJSON(k, { t: Date.now(), v }).catch(() => {});
   return v;
 }
+// Email lewat Resend. EMAIL_TO boleh berisi beberapa alamat (pisah koma/titik koma/spasi); tiap alamat dikirim terpisah supaya satu alamat yang ditolak tidak menggagalkan yang lain.
+const mailDetail = { err: '' };
+async function mailSend(subject, rows) {
+  const k = (process.env.RESEND_KEY || '').trim(), raw = process.env.EMAIL_TO || '', to = raw.split(/[,;\s]+/).map(x => x.trim()).filter(Boolean);
+  if (!k) return { ok: false, err: 'RESEND_KEY belum terbaca oleh server (cek nama variabel, scope Functions, lalu deploy ulang)' };
+  if (!to.length) return { ok: false, err: 'EMAIL_TO belum terbaca oleh server (cek nama variabel dan deploy ulang)' };
+  const from = (process.env.EMAIL_FROM || '').trim() || 'Trading AI <onboarding@resend.dev>';
+  const html = `<div style="font-family:system-ui,sans-serif"><h3>${subject}</h3><table cellpadding="4">${rows.map(r => `<tr><td style="color:#667">${r[0]}</td><td><b>${r[1]}</b></td></tr>`).join('')}</table><p style="color:#889;font-size:12px">Paper trading (simulasi), bukan saran keuangan.</p></div>`;
+  let okN = 0; const errs = [];
+  for (const addr of to) {
+    try {
+      const r = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { Authorization: 'Bearer ' + k, 'content-type': 'application/json' }, body: JSON.stringify({ from, to: [addr], subject, html }) });
+      if (r.ok) okN++;
+      else { let m = ''; try { const j = await r.json(); m = j.message || j.error || JSON.stringify(j); } catch (e) { m = await r.text().catch(() => ''); } errs.push(`${addr}: HTTP ${r.status} ${String(m).slice(0, 160)}`); }
+    } catch (e) { errs.push(`${addr}: ${e.message}`); }
+  }
+  let err = errs.join(' | ');
+  if (errs.some(x => /only send testing emails|verify a domain|domain is not verified/i.test(x))) err += ' || Pengirim bawaan Resend (onboarding@resend.dev) hanya boleh mengirim ke email pemilik akun Resend. Untuk alamat lain, verifikasi domain di resend.com/domains lalu isi EMAIL_FROM, misalnya "Trading AI <alert@domain-anda.com>".';
+  return { ok: okN > 0, sent: okN, total: to.length, err };
+}
 async function mail(st, cfg, kind, subject, rows) {
   if (!cfg['email' + kind]) return false;
-  const k = process.env.RESEND_KEY, to = process.env.EMAIL_TO; if (!k || !to) return false;
-  const html = `<div style="font-family:system-ui,sans-serif"><h3>${subject}</h3><table cellpadding="4">${rows.map(r => `<tr><td style="color:#667">${r[0]}</td><td><b>${r[1]}</b></td></tr>`).join('')}</table><p style="color:#889;font-size:12px">Paper trading (simulasi), bukan saran keuangan.</p></div>`;
-  try {
-    const r = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { Authorization: 'Bearer ' + k, 'content-type': 'application/json' },
-      body: JSON.stringify({ from: process.env.EMAIL_FROM || 'Trading AI <onboarding@resend.dev>', to: [to], subject, html }) });
-    if (r.ok) { st.emails++; return true; } return false;
-  } catch (e) { return false; }
+  const r = await mailSend(subject, rows);
+  if (r.ok) { st.emails++; return true; }
+  if (r.err && st.log && Date.now() - (st.mailErrAt || 0) > 1800000) { st.mailErrAt = Date.now(); ev(st, 'ANA', '-', 'email gagal: ' + r.err.slice(0, 220)); }
+  return false;
 }
-const testMail = () => mail({ emails: 0 }, { emailTest: true }, 'Test', 'Tes email Trading AI', [['Status', 'Email berfungsi']]);
+const testMail = () => mailSend('Tes email Trading AI', [['Status', 'Email berfungsi']]);
 const ev = (st, a, s, m) => { st.log.unshift({ t: Date.now(), a, s, m }); if (st.log.length > 80) st.log.length = 80; st.counts[a] = (st.counts[a] || 0) + 1; };
 
 async function llm(prompt) {

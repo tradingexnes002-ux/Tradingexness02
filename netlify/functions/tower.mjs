@@ -49,7 +49,7 @@ export default async req => {
       if (b.action === 'run') await tower.runOnce(store, true, getStore('mt5-trading'));
       if (b.action === 'realCancel' && b.sym) await tower.cancelReal(store, getStore('mt5-trading'), String(b.sym).slice(0, 24), 'dibatalkan manual dari dashboard');
       if (b.action === 'reset') await store.setJSON('state', tower.fresh());
-      if (b.action === 'testmail') return J({ ok: await tower.testMail() });
+      if (b.action === 'testmail') return J(await tower.testMail());
     }
     const config = await tower.getCfg(store), state = await tower.getState(store, config);
     if (!owner) { // PENGUNJUNG: simulasi saja. Semua yang berkaitan dengan akun real, pengaturan eksekusi, dan perintah MT5 dibuang.

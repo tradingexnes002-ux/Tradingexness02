@@ -57,7 +57,7 @@ Cara kerja: tiap 15 menit (menit ke 2, 17, 32, 47 UTC) fungsi monitor memeriksa 
 - Email saat acuan H1 mencapai 7/8 syarat, saat inti entry M15 terpenuhi (SIAP ENTRY), saat AI membuka posisi paper, dan saat posisi kena TP, SL, atau habis waktu.
 - Posisi ditutup SL lebih dulu jika SL dan TP tersentuh di candle yang sama (hitungan konservatif). Posisi habis waktu setelah 96 candle entry.
 - Winrate dihitung TP dibanding SL. Kurva R memakai hasil dalam satuan R (jarak entry ke SL).
-Variabel Netlify tambahan: RESEND_KEY (dari resend.com), EMAIL_TO (email yang dipakai mendaftar di Resend), EMAIL_FROM (opsional).
+Variabel Netlify tambahan: RESEND_KEY (dari resend.com), EMAIL_TO (satu atau beberapa alamat, pisah koma), EMAIL_FROM (wajib berupa domain terverifikasi di Resend bila mengirim ke alamat selain email pemilik akun Resend).
 Pemantauan hanya berjalan di deploy produksi. Jika jadwal tidak berjalan di akun Anda, pakai layanan cron gratis (mis. cron-job.org) untuk memanggil alamat-situs/.netlify/functions/tower?run=1 tiap 15 menit dengan header x-app-key berisi APP_PASSWORD.
 Data posisi dan riwayat disimpan di Netlify Blobs.
 
@@ -221,3 +221,9 @@ Di panel "Eksekusi otomatis ke MT5" ada pilihan **Mode order**:
 - Tanpa APP_PASSWORD terkonfigurasi tidak ada pemilik: semua kontrol tertutup.
 - `PUBLIC_VIEW=false` di Netlify menutup juga tampilan untuk pengunjung (semua wajib password).
 - Penguncian proses: Control Tower tidak berjalan dua kali bersamaan (mencegah order ganda saat jadwal dan klik manual bertumpuk).
+
+## Pembaruan v14k: email
+
+- EMAIL_TO boleh berisi beberapa alamat (pisah koma). Tiap alamat dikirim terpisah.
+- Tombol Tes email menampilkan alasan sebenarnya dari Resend, dan log memuat "email gagal: ..." bila pengiriman otomatis gagal.
+- Pengirim bawaan Resend (onboarding@resend.dev) hanya bisa mengirim ke email pemilik akun Resend. Untuk alamat lain: verifikasi domain di resend.com/domains, lalu isi EMAIL_FROM.
